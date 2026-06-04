@@ -45,3 +45,31 @@ resolve_binding:
       selector:
         text: {}
 
+simulate_remote_event:
+  name: Simulate remote event
+  description: Fire a normalized remote event through the router for testing.
+  fields:
+    remote_device_id:
+      required: true
+      selector:
+        text: {}
+    event_type:
+      required: true
+      selector:
+        text: {}
+    event_subtype:
+      required: false
+      selector:
+        text: {}
+    command:
+      required: false
+      selector:
+        text: {}
+    source:
+      required: false
+      selector:
+        text: {}
+    payload:
+      required: false
+      selector:
+        object: {}

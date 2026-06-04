@@ -7,26 +7,39 @@ from collections.abc import Callable
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_NAME
+from homeassistant.const import CONF_NAME, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, callback
 from homeassistant.exceptions import HomeAssistantError
 
-from .binding_rules import resolve_action_profile
 from .capabilities import async_resolve_target_capability
 from .const import (
     ATTR_BINDING_ID,
+    ATTR_EVENT_COMMAND,
+    ATTR_EVENT_PAYLOAD,
+    ATTR_EVENT_SOURCE,
+    ATTR_EVENT_SUBTYPE,
+    ATTR_EVENT_TYPE,
+    ATTR_HANDLED_BY_SERVICE,
     ATTR_REMOTE_DEVICE_ID,
     ATTR_TARGET_DEVICE_ID,
     ATTR_TARGET_ENTITY_ID,
     ATTR_TARGET_KIND,
     CONF_BINDING_NAME,
     CONF_ENABLED,
+    DATA_EVENT_ROUTER,
+    DATA_REMOTE_ROUTER,
+    DATA_TRIGGER_LISTENERS,
     DOMAIN,
+    EVENT_REMOTE_MANAGER,
     SERVICE_REGISTER_BINDING,
     SERVICE_RESOLVE_BINDING,
+    SERVICE_SIMULATE_REMOTE_EVENT,
     SERVICE_UNBIND,
 )
+from .event_router import EventRouter
+from .remote_router import RemoteRouter
 from .store import RemoteBinding, RemoteBindingStore
+from .trigger_listener import async_start_trigger_listeners
 
 PLATFORMS: tuple[str, ...] = ()
 
@@ -53,6 +66,17 @@ RESOLVE_BINDING_SCHEMA = vol.Schema(
     }
 )
 
+SIMULATE_REMOTE_EVENT_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_REMOTE_DEVICE_ID): str,
+        vol.Required(ATTR_EVENT_TYPE): str,
+        vol.Optional(ATTR_EVENT_SUBTYPE): str,
+        vol.Optional(ATTR_EVENT_COMMAND): str,
+        vol.Optional(ATTR_EVENT_SOURCE): str,
+        vol.Optional(ATTR_EVENT_PAYLOAD): dict,
+    }
+)
+
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the integration."""
@@ -70,10 +94,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await store.async_load()
         data["store"] = store
 
+    event_router = data.get(DATA_EVENT_ROUTER)
+    if event_router is None:
+        event_router = EventRouter(hass, store)
+        data[DATA_EVENT_ROUTER] = event_router
+
+    remote_router = data.get(DATA_REMOTE_ROUTER)
+    if remote_router is None:
+        remote_router = RemoteRouter(hass, store, event_router)
+        data[DATA_REMOTE_ROUTER] = remote_router
+
     binding = _binding_from_entry(entry)
     await store.async_upsert_binding(binding)
     data.setdefault("entries", set()).add(entry.entry_id)
     _register_services_once(hass)
+    _ensure_listener_started(hass)
     return True
 
 
@@ -88,6 +123,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entries = data.get("entries")
         if isinstance(entries, set):
             entries.discard(entry.entry_id)
+            if not entries:
+                _stop_listeners(hass)
     return True
 
 
@@ -182,6 +219,33 @@ def _register_services_once(hass: HomeAssistant) -> None:
         )
         return {"binding": binding.as_dict(), "capability": capability.as_dict()}
 
+    async def handle_simulate_remote_event(call: ServiceCall):
+        remote_router: RemoteRouter | None = hass.data.get(DOMAIN, {}).get(DATA_REMOTE_ROUTER)
+        if remote_router is None:
+            raise HomeAssistantError("Remote router is not ready")
+
+        event_data = {
+            ATTR_REMOTE_DEVICE_ID: str(call.data[ATTR_REMOTE_DEVICE_ID]).strip(),
+            ATTR_EVENT_TYPE: str(call.data[ATTR_EVENT_TYPE]).strip(),
+            ATTR_EVENT_SUBTYPE: str(call.data.get(ATTR_EVENT_SUBTYPE) or "").strip() or None,
+            ATTR_EVENT_COMMAND: str(call.data.get(ATTR_EVENT_COMMAND) or "").strip() or None,
+            ATTR_EVENT_SOURCE: str(call.data.get(ATTR_EVENT_SOURCE) or "simulate_remote_event").strip(),
+            ATTR_EVENT_PAYLOAD: dict(call.data.get(ATTR_EVENT_PAYLOAD) or {}),
+        }
+        result = await remote_router.async_handle_normalized_event(
+            event_data,
+            source=event_data[ATTR_EVENT_SOURCE],
+        )
+        hass.bus.async_fire(
+            EVENT_REMOTE_MANAGER,
+            {
+                **event_data,
+                ATTR_HANDLED_BY_SERVICE: True,
+                "result": result.as_dict(),
+            },
+        )
+        return result.as_dict()
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_REGISTER_BINDING,
@@ -203,5 +267,45 @@ def _register_services_once(hass: HomeAssistant) -> None:
         schema=RESOLVE_BINDING_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SIMULATE_REMOTE_EVENT,
+        handle_simulate_remote_event,
+        schema=SIMULATE_REMOTE_EVENT_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     data["services_registered"] = True
 
+
+def _ensure_listener_started(hass: HomeAssistant) -> None:
+    data = hass.data.setdefault(DOMAIN, {})
+    if data.get(DATA_TRIGGER_LISTENERS):
+        return
+
+    remote_router: RemoteRouter | None = data.get(DATA_REMOTE_ROUTER)
+    if remote_router is None:
+        remote_router = RemoteRouter(hass, _get_store(hass), EventRouter(hass, _get_store(hass)))
+        data[DATA_REMOTE_ROUTER] = remote_router
+
+    unsubscribers = async_start_trigger_listeners(hass, remote_router)
+    data[DATA_TRIGGER_LISTENERS] = unsubscribers
+
+    @callback
+    def _stop_on_shutdown(_event) -> None:
+        _stop_listeners(hass)
+
+    data.setdefault("shutdown_unsubscribe", hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop_on_shutdown))
+
+
+def _stop_listeners(hass: HomeAssistant) -> None:
+    data = hass.data.get(DOMAIN, {})
+    unsubscribers = data.pop(DATA_TRIGGER_LISTENERS, None)
+    if isinstance(unsubscribers, (list, tuple)):
+        for unsubscribe in unsubscribers:
+            try:
+                unsubscribe()
+            except Exception:  # pragma: no cover - defensive teardown
+                continue
+    shutdown_unsubscribe: Callable[[], None] | None = data.pop("shutdown_unsubscribe", None)
+    if callable(shutdown_unsubscribe):
+        shutdown_unsubscribe()

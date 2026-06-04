@@ -62,7 +62,10 @@
     "resolve_binding": {
       "name": "Resolve binding",
       "description": "Return the computed target capability profile for a binding."
+    },
+    "simulate_remote_event": {
+      "name": "Simulate remote event",
+      "description": "Fire a normalized remote event through the router for testing."
     }
   }
 }
-
