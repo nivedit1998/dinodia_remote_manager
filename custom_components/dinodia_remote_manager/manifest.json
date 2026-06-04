@@ -1,0 +1,9 @@
+{
+  "domain": "dinodia_remote_manager",
+  "name": "Dinodia Remote Manager",
+  "version": "0.1.0",
+  "config_flow": true,
+  "documentation": "https://github.com/nivedit1998/HomeAssistant-Quirks",
+  "codeowners": ["@nivedit1998"]
+}
+

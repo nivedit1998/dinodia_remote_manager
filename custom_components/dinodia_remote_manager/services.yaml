@@ -1,0 +1,47 @@
+register_binding:
+  name: Register binding
+  description: Register a remote-to-target binding.
+  fields:
+    remote_device_id:
+      required: true
+      selector:
+        text: {}
+    target_device_id:
+      required: false
+      selector:
+        text: {}
+    target_entity_id:
+      required: false
+      selector:
+        text: {}
+    binding_name:
+      required: false
+      selector:
+        text: {}
+
+unbind:
+  name: Unbind
+  description: Remove a binding by binding id or remote device id.
+  fields:
+    binding_id:
+      required: false
+      selector:
+        text: {}
+    remote_device_id:
+      required: false
+      selector:
+        text: {}
+
+resolve_binding:
+  name: Resolve binding
+  description: Return the computed target capability profile for a binding.
+  fields:
+    binding_id:
+      required: false
+      selector:
+        text: {}
+    remote_device_id:
+      required: false
+      selector:
+        text: {}
+
