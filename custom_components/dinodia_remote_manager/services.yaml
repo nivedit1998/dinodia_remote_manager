@@ -44,6 +44,14 @@ resolve_binding:
       required: false
       selector:
         text: {}
+    remote_entity_id:
+      required: false
+      selector:
+        text: {}
+
+list_bindings:
+  name: List bindings
+  description: Return all stored remote bindings for diagnostics.
 
 simulate_remote_event:
   name: Simulate remote event

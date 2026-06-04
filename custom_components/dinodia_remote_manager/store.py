@@ -16,6 +16,14 @@ def _utcnow_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
+def _normalized_identifier(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    for prefix in ("device:", "remote:", "id:"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix) :].strip()
+    return normalized
+
+
 @dataclass(slots=True)
 class RemoteBinding:
     binding_id: str
@@ -30,6 +38,19 @@ class RemoteBinding:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def as_api_dict(self) -> dict[str, Any]:
+        return {
+            "bindingId": self.binding_id,
+            "remoteDeviceId": self.remote_device_id,
+            "targetDeviceId": self.target_device_id,
+            "targetEntityId": self.target_entity_id,
+            "targetKind": self.target_kind,
+            "bindingName": self.binding_name,
+            "enabled": self.enabled,
+            "createdAt": self.created_at,
+            "updatedAt": self.updated_at,
+        }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RemoteBinding":
@@ -79,13 +100,49 @@ class RemoteBindingStore:
     def async_get_binding(self, binding_id: str) -> RemoteBinding | None:
         return self._bindings.get(binding_id)
 
-    def async_get_binding_by_remote(self, remote_device_id: str) -> RemoteBinding | None:
-        normalized = remote_device_id.strip()
-        if not normalized:
+    def async_get_binding_by_remote(self, remote_device_id: str, *aliases: str) -> RemoteBinding | None:
+        candidates = {
+            _normalized_identifier(remote_device_id),
+            remote_device_id.strip(),
+        }
+        for alias in aliases:
+            normalized_alias = _normalized_identifier(alias)
+            if normalized_alias:
+                candidates.add(normalized_alias)
+            raw_alias = str(alias or "").strip()
+            if raw_alias:
+                candidates.add(raw_alias)
+        candidates = {candidate for candidate in candidates if candidate}
+        if not candidates:
             return None
         for binding in self._bindings.values():
-            if binding.remote_device_id == normalized:
+            binding_candidates = {
+                binding.remote_device_id,
+                _normalized_identifier(binding.remote_device_id),
+                binding.binding_id,
+                _normalized_identifier(binding.binding_id),
+            }
+            if any(candidate in binding_candidates for candidate in candidates):
                 return binding
+        return None
+
+    def async_find_binding(
+        self,
+        *,
+        binding_id: str | None = None,
+        remote_device_id: str | None = None,
+        remote_device_aliases: list[str] | tuple[str, ...] | None = None,
+    ) -> RemoteBinding | None:
+        if binding_id:
+            binding = self.async_get_binding(binding_id)
+            if binding is not None:
+                return binding
+        aliases = list(remote_device_aliases or ())
+        if remote_device_id:
+            aliases.append(remote_device_id)
+        if aliases:
+            primary = aliases[0]
+            return self.async_get_binding_by_remote(primary, *aliases[1:])
         return None
 
     def async_list_bindings(self) -> list[RemoteBinding]:
@@ -135,4 +192,3 @@ class RemoteBindingStore:
         if removed:
             await self.async_save()
         return removed
-

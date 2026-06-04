@@ -21,6 +21,7 @@ from .const import (
     ATTR_EVENT_TYPE,
     ATTR_HANDLED_BY_SERVICE,
     ATTR_REMOTE_DEVICE_ID,
+    ATTR_REMOTE_ENTITY_ID,
     ATTR_TARGET_DEVICE_ID,
     ATTR_TARGET_ENTITY_ID,
     ATTR_TARGET_KIND,
@@ -32,6 +33,7 @@ from .const import (
     DOMAIN,
     EVENT_REMOTE_MANAGER,
     SERVICE_REGISTER_BINDING,
+    SERVICE_LIST_BINDINGS,
     SERVICE_RESOLVE_BINDING,
     SERVICE_SIMULATE_REMOTE_EVENT,
     SERVICE_UNBIND,
@@ -63,8 +65,11 @@ RESOLVE_BINDING_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_BINDING_ID): str,
         vol.Optional(ATTR_REMOTE_DEVICE_ID): str,
+        vol.Optional(ATTR_REMOTE_ENTITY_ID): str,
     }
 )
+
+LIST_BINDINGS_SCHEMA = vol.Schema({})
 
 SIMULATE_REMOTE_EVENT_SCHEMA = vol.Schema(
     {
@@ -188,7 +193,7 @@ def _register_services_once(hass: HomeAssistant) -> None:
             enabled=True,
         )
         await store.async_upsert_binding(binding)
-        return {"binding": binding.as_dict(), "capability": capability.as_dict()}
+        return {"binding": binding.as_api_dict(), "capability": capability.as_api_dict()}
 
     async def handle_unbind(call: ServiceCall):
         store = _get_store(hass)
@@ -205,19 +210,45 @@ def _register_services_once(hass: HomeAssistant) -> None:
         binding = None
         binding_id = str(call.data.get(ATTR_BINDING_ID) or "").strip()
         remote_device_id = str(call.data.get(ATTR_REMOTE_DEVICE_ID) or "").strip()
-        if binding_id:
-            binding = store.async_get_binding(binding_id=binding_id)
-        elif remote_device_id:
-            binding = store.async_get_binding_by_remote(remote_device_id)
+        remote_entity_id = str(call.data.get(ATTR_REMOTE_ENTITY_ID) or "").strip()
+        binding = store.async_find_binding(
+            binding_id=binding_id or None,
+            remote_device_id=remote_device_id or None,
+            remote_device_aliases=[remote_entity_id] if remote_entity_id else None,
+        )
         if binding is None:
-            raise HomeAssistantError("Binding not found")
+            return {
+                "binding": None,
+                "capability": None,
+                "reason": "Binding not found",
+                "binding_lookup": {
+                    "binding_id": binding_id or None,
+                    "remote_device_id": remote_device_id or None,
+                    "remote_entity_id": remote_entity_id or None,
+                },
+            }
 
         capability = await async_resolve_target_capability(
             hass,
             target_device_id=binding.target_device_id,
             target_entity_id=binding.target_entity_id,
         )
-        return {"binding": binding.as_dict(), "capability": capability.as_dict()}
+        return {
+            "binding": binding.as_api_dict(),
+            "capability": capability.as_api_dict(),
+            "binding_lookup": {
+                "binding_id": binding_id or None,
+                "remote_device_id": remote_device_id or None,
+                "remote_entity_id": remote_entity_id or None,
+            },
+        }
+
+    async def handle_list_bindings(call: ServiceCall):
+        del call
+        store = _get_store(hass)
+        return {
+            "bindings": [binding.as_api_dict() for binding in store.async_list_bindings()],
+        }
 
     async def handle_simulate_remote_event(call: ServiceCall):
         remote_router: RemoteRouter | None = hass.data.get(DOMAIN, {}).get(DATA_REMOTE_ROUTER)
@@ -265,6 +296,13 @@ def _register_services_once(hass: HomeAssistant) -> None:
         SERVICE_RESOLVE_BINDING,
         handle_resolve_binding,
         schema=RESOLVE_BINDING_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_BINDINGS,
+        handle_list_bindings,
+        schema=LIST_BINDINGS_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(

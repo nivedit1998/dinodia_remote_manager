@@ -50,22 +50,26 @@
       }
     }
   },
-  "services": {
-    "register_binding": {
-      "name": "Register binding",
-      "description": "Register a remote-to-target binding."
-    },
+    "services": {
+      "register_binding": {
+        "name": "Register binding",
+        "description": "Register a remote-to-target binding."
+      },
     "unbind": {
       "name": "Unbind",
       "description": "Remove a binding by binding id or remote device id."
     },
-    "resolve_binding": {
-      "name": "Resolve binding",
-      "description": "Return the computed target capability profile for a binding."
-    },
-    "simulate_remote_event": {
-      "name": "Simulate remote event",
-      "description": "Fire a normalized remote event through the router for testing."
-    }
+      "resolve_binding": {
+        "name": "Resolve binding",
+        "description": "Return the computed target capability profile for a binding."
+      },
+      "list_bindings": {
+        "name": "List bindings",
+        "description": "Return all stored remote bindings for diagnostics."
+      },
+      "simulate_remote_event": {
+        "name": "Simulate remote event",
+        "description": "Fire a normalized remote event through the router for testing."
+      }
   }
 }

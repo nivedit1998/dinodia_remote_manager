@@ -36,6 +36,19 @@ class ResolvedCapability:
             "source": self.source,
         }
 
+    def as_api_dict(self) -> dict[str, object]:
+        return {
+            "targetKind": self.target_kind,
+            "domain": self.domain,
+            "supported": self.supported,
+            "actions": list(self.actions),
+            "description": self.description,
+            "reason": self.reason,
+            "targetDeviceId": self.target_device_id,
+            "targetEntityId": self.target_entity_id,
+            "source": self.source,
+        }
+
 
 def _device_has_remote_label(device: dr.DeviceEntry) -> bool:
     labels = getattr(device, "labels", None) or []
