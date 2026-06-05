@@ -37,6 +37,7 @@ from .const import (
     SERVICE_RESOLVE_BINDING,
     SERVICE_SIMULATE_REMOTE_EVENT,
     SERVICE_UNBIND,
+    SERVICE_UPDATE_BINDING,
 )
 from .event_router import EventRouter
 from .remote_router import RemoteRouter
@@ -47,6 +48,16 @@ PLATFORMS: tuple[str, ...] = ()
 
 REGISTER_BINDING_SCHEMA = vol.Schema(
     {
+        vol.Required(ATTR_REMOTE_DEVICE_ID): str,
+        vol.Optional(ATTR_TARGET_DEVICE_ID): str,
+        vol.Optional(ATTR_TARGET_ENTITY_ID): str,
+        vol.Optional(CONF_BINDING_NAME): str,
+    }
+)
+
+UPDATE_BINDING_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_BINDING_ID): str,
         vol.Required(ATTR_REMOTE_DEVICE_ID): str,
         vol.Optional(ATTR_TARGET_DEVICE_ID): str,
         vol.Optional(ATTR_TARGET_ENTITY_ID): str,
@@ -163,6 +174,34 @@ def _get_store(hass: HomeAssistant) -> RemoteBindingStore:
     return store
 
 
+@callback
+def _update_matching_config_entries(
+    hass: HomeAssistant,
+    *,
+    binding_id: str,
+    remote_device_id: str,
+    target_device_id: str | None,
+    target_entity_id: str | None,
+    target_kind: str,
+    binding_name: str | None,
+) -> None:
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        entry_binding_id = str(entry.data.get(ATTR_BINDING_ID) or entry.entry_id).strip()
+        entry_remote_device_id = str(entry.data.get(ATTR_REMOTE_DEVICE_ID) or "").strip()
+        if entry_binding_id != binding_id and entry_remote_device_id != remote_device_id:
+            continue
+
+        new_data = dict(entry.data)
+        new_data[ATTR_BINDING_ID] = binding_id
+        new_data[ATTR_REMOTE_DEVICE_ID] = remote_device_id
+        new_data[ATTR_TARGET_DEVICE_ID] = target_device_id
+        new_data[ATTR_TARGET_ENTITY_ID] = target_entity_id
+        new_data[ATTR_TARGET_KIND] = target_kind
+        if binding_name:
+            new_data[CONF_BINDING_NAME] = binding_name
+        hass.config_entries.async_update_entry(entry, data=new_data)
+
+
 def _register_services_once(hass: HomeAssistant) -> None:
     data = hass.data.setdefault(DOMAIN, {})
     if data.get("services_registered"):
@@ -183,16 +222,62 @@ def _register_services_once(hass: HomeAssistant) -> None:
         if not capability.supported:
             raise HomeAssistantError(capability.reason or "Unsupported target")
 
-        binding = RemoteBinding(
-            binding_id=f"{remote_device_id}:{target_device_id or target_entity_id}",
+        binding = await store.async_replace_binding_for_remote(
             remote_device_id=remote_device_id,
-            target_device_id=target_device_id,
-            target_entity_id=target_entity_id,
+            target_device_id=capability.target_device_id or target_device_id,
+            target_entity_id=capability.target_entity_id or target_entity_id,
             target_kind=capability.target_kind,
             binding_name=binding_name,
             enabled=True,
         )
-        await store.async_upsert_binding(binding)
+        _update_matching_config_entries(
+            hass,
+            binding_id=binding.binding_id,
+            remote_device_id=binding.remote_device_id,
+            target_device_id=binding.target_device_id,
+            target_entity_id=binding.target_entity_id,
+            target_kind=binding.target_kind,
+            binding_name=binding.binding_name,
+        )
+        return {"binding": binding.as_api_dict(), "capability": capability.as_api_dict()}
+
+    async def handle_update_binding(call: ServiceCall):
+        store = _get_store(hass)
+        binding_id = str(call.data.get(ATTR_BINDING_ID) or "").strip() or None
+        remote_device_id = str(call.data[ATTR_REMOTE_DEVICE_ID]).strip()
+        target_device_id = str(call.data.get(ATTR_TARGET_DEVICE_ID) or "").strip() or None
+        target_entity_id = str(call.data.get(ATTR_TARGET_ENTITY_ID) or "").strip() or None
+        binding_name = str(call.data.get(CONF_BINDING_NAME) or "").strip() or None
+
+        if not target_device_id and not target_entity_id:
+            raise HomeAssistantError("Target device or entity is required")
+
+        capability = await async_resolve_target_capability(
+            hass,
+            target_device_id=target_device_id,
+            target_entity_id=target_entity_id,
+        )
+        if not capability.supported:
+            raise HomeAssistantError(capability.reason or "Unsupported target")
+
+        binding = await store.async_replace_binding_for_remote(
+            binding_id=binding_id,
+            remote_device_id=remote_device_id,
+            target_device_id=capability.target_device_id or target_device_id,
+            target_entity_id=capability.target_entity_id or target_entity_id,
+            target_kind=capability.target_kind,
+            binding_name=binding_name,
+            enabled=True,
+        )
+        _update_matching_config_entries(
+            hass,
+            binding_id=binding.binding_id,
+            remote_device_id=binding.remote_device_id,
+            target_device_id=binding.target_device_id,
+            target_entity_id=binding.target_entity_id,
+            target_kind=binding.target_kind,
+            binding_name=binding.binding_name,
+        )
         return {"binding": binding.as_api_dict(), "capability": capability.as_api_dict()}
 
     async def handle_unbind(call: ServiceCall):
@@ -282,6 +367,13 @@ def _register_services_once(hass: HomeAssistant) -> None:
         SERVICE_REGISTER_BINDING,
         handle_register_binding,
         schema=REGISTER_BINDING_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_UPDATE_BINDING,
+        handle_update_binding,
+        schema=UPDATE_BINDING_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(

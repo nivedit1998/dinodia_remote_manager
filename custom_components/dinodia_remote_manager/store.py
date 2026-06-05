@@ -24,6 +24,10 @@ def _normalized_identifier(value: str | None) -> str:
     return normalized
 
 
+def _binding_matches_remote(binding: "RemoteBinding", remote_device_id: str) -> bool:
+    return _normalized_identifier(binding.remote_device_id) == _normalized_identifier(remote_device_id)
+
+
 @dataclass(slots=True)
 class RemoteBinding:
     binding_id: str
@@ -169,6 +173,51 @@ class RemoteBindingStore:
         self._bindings[updated.binding_id] = updated
         await self.async_save()
         return updated
+
+    async def async_replace_binding_for_remote(
+        self,
+        *,
+        remote_device_id: str,
+        binding_id: str | None = None,
+        target_device_id: str | None = None,
+        target_entity_id: str | None = None,
+        target_kind: str,
+        binding_name: str | None = None,
+        enabled: bool = True,
+    ) -> RemoteBinding:
+        existing = self.async_find_binding(
+            binding_id=binding_id,
+            remote_device_id=remote_device_id,
+        )
+        stable_binding_id = (
+            existing.binding_id
+            if existing is not None
+            else (binding_id or f"remote:{remote_device_id}")
+        )
+
+        if binding_name:
+            stable_binding_name = binding_name
+        elif existing is not None:
+            stable_binding_name = existing.binding_name
+        else:
+            stable_binding_name = None
+
+        for key, candidate in list(self._bindings.items()):
+            if key == stable_binding_id:
+                continue
+            if _binding_matches_remote(candidate, remote_device_id):
+                self._bindings.pop(key, None)
+
+        binding = RemoteBinding(
+            binding_id=stable_binding_id,
+            remote_device_id=remote_device_id,
+            target_device_id=target_device_id,
+            target_entity_id=target_entity_id,
+            target_kind=target_kind,
+            binding_name=stable_binding_name,
+            enabled=existing.enabled if existing is not None else enabled,
+        )
+        return await self.async_upsert_binding(binding)
 
     async def async_remove_binding(
         self,

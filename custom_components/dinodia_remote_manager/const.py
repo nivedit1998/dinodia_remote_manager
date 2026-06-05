@@ -26,6 +26,7 @@ CONF_BINDING_NAME = "binding_name"
 CONF_ENABLED = "enabled"
 
 SERVICE_REGISTER_BINDING = "register_binding"
+SERVICE_UPDATE_BINDING = "update_binding"
 SERVICE_UNBIND = "unbind"
 SERVICE_RESOLVE_BINDING = "resolve_binding"
 SERVICE_LIST_BINDINGS = "list_bindings"

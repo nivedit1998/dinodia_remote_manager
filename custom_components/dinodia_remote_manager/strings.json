@@ -55,6 +55,10 @@
         "name": "Register binding",
         "description": "Register a remote-to-target binding."
       },
+      "update_binding": {
+        "name": "Update binding",
+        "description": "Create or replace the target for one remote binding."
+      },
     "unbind": {
       "name": "Unbind",
       "description": "Remove a binding by binding id or remote device id."
