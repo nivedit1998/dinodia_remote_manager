@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
+from homeassistant.components.device_automation import async_get_device_automations
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .binding_rules import ActionProfile, resolve_action_profile, is_supported_actionable_domain
 from .const import REMOTE_LABEL_NAME
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -51,6 +55,9 @@ class ResolvedCapability:
 
 
 def _device_has_remote_label(device: dr.DeviceEntry) -> bool:
+    # The HA "Remote" label is an installer convenience and visual label.
+    # Dinodia classifies trigger-device behavior from bindings, HA device triggers,
+    # and capabilities, not from label alone.
     labels = getattr(device, "labels", None) or []
     for label in labels:
         if isinstance(label, str):
@@ -74,6 +81,76 @@ def _friendly_entity_name(entity: er.RegistryEntry, state_name: str | None) -> s
 
 def _supported_domain_from_entity(entity_id: str) -> str:
     return (entity_id.split(".")[0] if "." in entity_id else entity_id).strip().lower()
+
+
+async def async_get_device_triggers(hass: HomeAssistant, device_id: str) -> list[dict[str, object]]:
+    try:
+        triggers = await async_get_device_automations(hass, "trigger", device_id)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Unable to list device triggers for %s: %s", device_id, err)
+        return []
+    return [dict(trigger) for trigger in triggers or []]
+
+
+async def async_device_has_triggers(hass: HomeAssistant, device_id: str) -> bool:
+    return bool(await async_get_device_triggers(hass, device_id))
+
+
+def _integration_domains_for_device(hass: HomeAssistant, device: dr.DeviceEntry) -> set[str]:
+    domains: set[str] = set()
+    for entry_id in getattr(device, "config_entries", ()) or ():
+        entry = hass.config_entries.async_get_entry(entry_id)
+        if entry is not None and entry.domain:
+            domains.add(entry.domain.lower())
+    for identifier in getattr(device, "identifiers", ()) or ():
+        try:
+            domain = str(next(iter(identifier))).strip().lower()
+        except Exception:  # noqa: BLE001
+            domain = ""
+        if domain:
+            domains.add(domain)
+    return domains
+
+
+def _registry_looks_remote_like(hass: HomeAssistant, device: dr.DeviceEntry) -> bool:
+    domains = _integration_domains_for_device(hass, device)
+    text = " ".join(
+        str(value or "")
+        for value in (
+            getattr(device, "manufacturer", ""),
+            getattr(device, "model", ""),
+            getattr(device, "name", ""),
+            getattr(device, "name_by_user", ""),
+            " ".join(domains),
+            " ".join(
+                " ".join(map(str, identifier))
+                for identifier in (getattr(device, "identifiers", ()) or ())
+            ),
+        )
+    ).lower()
+    remote_words = (
+        "remote",
+        "dimmer",
+        "button",
+        "shortcut",
+        "scene",
+        "dial",
+        "knob",
+        "rodret",
+        "styrbar",
+        "tradfri",
+        "symfonisk",
+        "hue tap",
+        "hue dimmer",
+    )
+    integration_words = ("zha", "zigbee", "matter", "thread", "homekit_controller")
+    return any(word in text for word in remote_words) and (
+        bool(domains.intersection(integration_words)) or any(word in text for word in integration_words)
+    )
+
+
+def _entity_is_diagnostic_or_trigger_only(entity_id: str) -> bool:
+    return _supported_domain_from_entity(entity_id) in {"button", "sensor", "binary_sensor", "event"}
 
 
 def _profile_for_entity(entity_id: str) -> ActionProfile:
@@ -126,6 +203,63 @@ async def async_get_supported_target_entity_choices(hass: HomeAssistant) -> dict
         state_name = state.name if state is not None else None
         choices[entity.entity_id] = _friendly_entity_name(entity, state_name)
     return dict(sorted(choices.items(), key=lambda item: item[1].lower()))
+
+
+async def async_get_trigger_device_inventory(hass: HomeAssistant) -> list[dict[str, object]]:
+    device_reg = dr.async_get(hass)
+    entity_reg = er.async_get(hass)
+    device_to_entities: dict[str, list[str]] = {}
+
+    for entity in entity_reg.entities.values():
+        if not entity.device_id:
+            continue
+        device_to_entities.setdefault(entity.device_id, []).append(entity.entity_id)
+
+    result: list[dict[str, object]] = []
+    for device in device_reg.devices.values():
+        device_id = device.id
+        entity_ids = device_to_entities.get(device_id, [])
+        target_entity = _resolve_entity_choice_for_device(hass, entity_ids)
+        has_actionable_target = target_entity is not None and is_supported_actionable_domain(
+            _supported_domain_from_entity(target_entity)
+        )
+        triggers = await async_get_device_triggers(hass, device_id)
+        remote_label = _device_has_remote_label(device)
+        registry_remote_like = _registry_looks_remote_like(hass, device)
+        diagnostic_only = bool(entity_ids) and all(
+            _entity_is_diagnostic_or_trigger_only(entity_id) for entity_id in entity_ids
+        )
+
+        if has_actionable_target:
+            continue
+        if not (triggers or registry_remote_like or (remote_label and diagnostic_only)):
+            continue
+
+        domains = sorted(_integration_domains_for_device(hass, device))
+        reason = (
+            "device_triggers"
+            if triggers
+            else "registry_remote_like"
+            if registry_remote_like
+            else "remote_label_diagnostic_only"
+        )
+        result.append(
+            {
+                "device_id": device_id,
+                "name": _friendly_device_name(device),
+                "trigger_count": len(triggers),
+                "triggers": triggers,
+                "entity_ids": entity_ids,
+                "has_actionable_target": has_actionable_target,
+                "remote_label": remote_label,
+                "registry_remote_like": registry_remote_like,
+                "integration_domains": domains,
+                "manufacturer": getattr(device, "manufacturer", None),
+                "model": getattr(device, "model", None),
+                "reason": reason,
+            }
+        )
+    return result
 
 
 def _resolve_entity_choice_for_device(hass: HomeAssistant, entity_ids: list[str]) -> str | None:

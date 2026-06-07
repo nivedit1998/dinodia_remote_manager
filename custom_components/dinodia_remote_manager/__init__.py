@@ -11,7 +11,7 @@ from homeassistant.const import CONF_NAME, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, callback
 from homeassistant.exceptions import HomeAssistantError
 
-from .capabilities import async_resolve_target_capability
+from .capabilities import async_get_trigger_device_inventory, async_resolve_target_capability
 from .const import (
     ATTR_BINDING_ID,
     ATTR_EVENT_COMMAND,
@@ -34,6 +34,7 @@ from .const import (
     EVENT_REMOTE_MANAGER,
     SERVICE_REGISTER_BINDING,
     SERVICE_LIST_BINDINGS,
+    SERVICE_LIST_TRIGGER_DEVICES,
     SERVICE_RESOLVE_BINDING,
     SERVICE_SIMULATE_REMOTE_EVENT,
     SERVICE_UNBIND,
@@ -81,6 +82,7 @@ RESOLVE_BINDING_SCHEMA = vol.Schema(
 )
 
 LIST_BINDINGS_SCHEMA = vol.Schema({})
+LIST_TRIGGER_DEVICES_SCHEMA = vol.Schema({})
 
 SIMULATE_REMOTE_EVENT_SCHEMA = vol.Schema(
     {
@@ -335,6 +337,12 @@ def _register_services_once(hass: HomeAssistant) -> None:
             "bindings": [binding.as_api_dict() for binding in store.async_list_bindings()],
         }
 
+    async def handle_list_trigger_devices(call: ServiceCall):
+        del call
+        return {
+            "trigger_devices": await async_get_trigger_device_inventory(hass),
+        }
+
     async def handle_simulate_remote_event(call: ServiceCall):
         remote_router: RemoteRouter | None = hass.data.get(DOMAIN, {}).get(DATA_REMOTE_ROUTER)
         if remote_router is None:
@@ -395,6 +403,13 @@ def _register_services_once(hass: HomeAssistant) -> None:
         SERVICE_LIST_BINDINGS,
         handle_list_bindings,
         schema=LIST_BINDINGS_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_TRIGGER_DEVICES,
+        handle_list_trigger_devices,
+        schema=LIST_TRIGGER_DEVICES_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register(

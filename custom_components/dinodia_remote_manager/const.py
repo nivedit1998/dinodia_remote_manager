@@ -30,6 +30,7 @@ SERVICE_UPDATE_BINDING = "update_binding"
 SERVICE_UNBIND = "unbind"
 SERVICE_RESOLVE_BINDING = "resolve_binding"
 SERVICE_LIST_BINDINGS = "list_bindings"
+SERVICE_LIST_TRIGGER_DEVICES = "list_trigger_devices"
 SERVICE_SIMULATE_REMOTE_EVENT = "simulate_remote_event"
 
 REMOTE_LABEL_NAME = "Remote"

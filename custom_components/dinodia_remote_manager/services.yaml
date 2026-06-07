@@ -78,6 +78,10 @@ list_bindings:
   name: List bindings
   description: Return all stored remote bindings for diagnostics.
 
+list_trigger_devices:
+  name: List trigger devices
+  description: Return devices that expose Home Assistant device triggers for Dinodia trigger-device discovery.
+
 simulate_remote_event:
   name: Simulate remote event
   description: Fire a normalized remote event through the router for testing.
