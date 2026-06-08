@@ -54,6 +54,8 @@ async def _maybe_fire_trigger_device_event(hass: HomeAssistant, event_data: dict
     device = device_reg.async_get(device_id)
     if device is None:
         return
+    # Runtime routing may use remote-like hints after a real event fires.
+    # Inventory classification is stricter and requires trigger evidence from capabilities.py.
     if not (await async_device_has_triggers(hass, device_id) or _registry_looks_remote_like(hass, device)):
         return
     hass.bus.async_fire(EVENT_REMOTE_MANAGER, _build_normalized_payload(event_data))

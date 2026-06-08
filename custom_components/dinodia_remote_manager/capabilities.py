@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 import logging
 import re
+import time
 from typing import Any
 
 from homeassistant.components.device_automation import async_get_device_automations
@@ -15,6 +17,10 @@ from .binding_rules import ActionProfile, resolve_action_profile
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+TRIGGER_DISCOVERY_CACHE_TTL_SECONDS = 30
+TRIGGER_DISCOVERY_CACHE_MAX_ITEMS = 256
+TRIGGER_DISCOVERY_CACHE_KEY = "trigger_discovery_cache"
 
 REAL_DASHBOARD_ACTION_DOMAINS = {
     "light",
@@ -112,6 +118,21 @@ class ResolvedCapability:
         }
 
 
+@dataclass(slots=True, frozen=True)
+class TriggerDiscoveryResult:
+    triggers: tuple[dict[str, object], ...]
+    sources: tuple[str, ...]
+    ha_python_trigger_count: int
+    ha_ws_equivalent_trigger_count: int
+    zha_quirk_trigger_count: int
+    integration_trigger_count: int
+    zha_quirk_class: str | None = None
+    zha_ieee: str | None = None
+    integration_domains: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+    fetched_at: float = 0.0
+
+
 def _label_name(hass: HomeAssistant, label_id: str) -> str:
     label_reg = lr.async_get(hass)
     label = label_reg.async_get_label(label_id)
@@ -201,13 +222,223 @@ def _classification_text_has_any(text: str, words: set[str]) -> bool:
     return False
 
 
-async def async_get_device_triggers(hass: HomeAssistant, device_id: str) -> list[dict[str, object]]:
+def _json_safe_value(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    return str(value)
+
+
+def _json_safe_trigger(trigger: dict[str, object]) -> dict[str, object]:
+    return {str(key): _json_safe_value(value) for key, value in trigger.items()}
+
+
+def _dedupe_triggers(triggers: list[dict[str, object]]) -> list[dict[str, object]]:
+    seen: set[str] = set()
+    result: list[dict[str, object]] = []
+    for raw_trigger in triggers:
+        trigger = _json_safe_trigger(raw_trigger)
+        key = "|".join(
+            str(trigger.get(field) or "")
+            for field in (
+                "platform",
+                "domain",
+                "device_id",
+                "type",
+                "subtype",
+                "command",
+                "cluster_id",
+                "endpoint_id",
+                "source",
+            )
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(trigger)
+    return result
+
+
+def _trigger_discovery_cache(hass: HomeAssistant) -> OrderedDict[str, TriggerDiscoveryResult]:
+    data = hass.data.setdefault(DOMAIN, {})
+    cache = data.get(TRIGGER_DISCOVERY_CACHE_KEY)
+    if not isinstance(cache, OrderedDict):
+        cache = OrderedDict()
+        data[TRIGGER_DISCOVERY_CACHE_KEY] = cache
+    return cache
+
+
+def _get_cached_trigger_discovery(
+    hass: HomeAssistant,
+    device_id: str,
+) -> TriggerDiscoveryResult | None:
+    cache = _trigger_discovery_cache(hass)
+    cached = cache.get(device_id)
+    if cached is None:
+        return None
+    if time.monotonic() - cached.fetched_at > TRIGGER_DISCOVERY_CACHE_TTL_SECONDS:
+        cache.pop(device_id, None)
+        return None
+    cache.move_to_end(device_id)
+    return cached
+
+
+def _set_cached_trigger_discovery(
+    hass: HomeAssistant,
+    device_id: str,
+    result: TriggerDiscoveryResult,
+) -> None:
+    cache = _trigger_discovery_cache(hass)
+    cache[device_id] = result
+    cache.move_to_end(device_id)
+    while len(cache) > TRIGGER_DISCOVERY_CACHE_MAX_ITEMS:
+        cache.popitem(last=False)
+
+
+async def _async_get_ha_python_device_triggers(
+    hass: HomeAssistant,
+    device_id: str,
+) -> tuple[list[dict[str, object]], tuple[str, ...]]:
     try:
         triggers = await async_get_device_automations(hass, "trigger", device_id)
     except Exception as err:  # noqa: BLE001
-        _LOGGER.debug("Unable to list device triggers for %s: %s", device_id, err)
-        return []
-    return [dict(trigger) for trigger in triggers or []]
+        _LOGGER.debug("Unable to list HA Python device triggers for %s: %s", device_id, err)
+        return [], (f"ha_python_trigger_error:{type(err).__name__}:{err}",)
+
+    normalized: list[dict[str, object]] = []
+    for trigger in triggers or []:
+        item = dict(trigger)
+        item.setdefault("source", "ha_device_automation_python")
+        normalized.append(_json_safe_trigger(item))
+    return normalized, ()
+
+
+async def _async_get_ha_ws_equivalent_device_triggers(
+    hass: HomeAssistant,
+    device_id: str,
+) -> tuple[list[dict[str, object]], tuple[str, ...]]:
+    del hass, device_id
+    return [], ("ha_ws_equivalent_unavailable",)
+
+
+async def async_get_device_triggers(hass: HomeAssistant, device_id: str) -> list[dict[str, object]]:
+    result = await async_get_device_trigger_discovery(hass, device_id)
+    return list(result.triggers)
+
+
+async def async_get_device_trigger_discovery(
+    hass: HomeAssistant,
+    device_id: str,
+    *,
+    use_cache: bool = True,
+) -> TriggerDiscoveryResult:
+    normalized_device_id = str(device_id or "").strip()
+    now = time.monotonic()
+    if not normalized_device_id:
+        return TriggerDiscoveryResult(
+            triggers=(),
+            sources=(),
+            ha_python_trigger_count=0,
+            ha_ws_equivalent_trigger_count=0,
+            zha_quirk_trigger_count=0,
+            integration_trigger_count=0,
+            errors=("empty_device_id",),
+            fetched_at=now,
+        )
+
+    if use_cache:
+        cached = _get_cached_trigger_discovery(hass, normalized_device_id)
+        if cached is not None:
+            return cached
+
+    device_reg = dr.async_get(hass)
+    device = device_reg.async_get(normalized_device_id)
+    if device is None:
+        result = TriggerDiscoveryResult(
+            triggers=(),
+            sources=(),
+            ha_python_trigger_count=0,
+            ha_ws_equivalent_trigger_count=0,
+            zha_quirk_trigger_count=0,
+            integration_trigger_count=0,
+            errors=("device_not_found",),
+            fetched_at=now,
+        )
+        _set_cached_trigger_discovery(hass, normalized_device_id, result)
+        return result
+
+    domains = tuple(sorted(_integration_domains_for_device(hass, device)))
+    ha_python_triggers, ha_python_errors = await _async_get_ha_python_device_triggers(
+        hass,
+        normalized_device_id,
+    )
+    ha_ws_triggers: list[dict[str, object]] = []
+    ha_ws_errors: tuple[str, ...] = ()
+    if not ha_python_triggers:
+        ha_ws_triggers, ha_ws_errors = await _async_get_ha_ws_equivalent_device_triggers(
+            hass,
+            normalized_device_id,
+        )
+
+    integration_triggers: list[dict[str, object]] = []
+    integration_metadata: dict[str, object] = {
+        "sources": [],
+        "errors": [],
+        "zha_quirk_trigger_count": 0,
+        "zha_quirk_class": None,
+        "zha_ieee": None,
+    }
+    if not ha_python_triggers and not ha_ws_triggers:
+        integration_triggers, integration_metadata = _get_integration_trigger_fallbacks(
+            hass,
+            normalized_device_id,
+            device,
+            domains,
+        )
+
+    triggers = _dedupe_triggers([*ha_python_triggers, *ha_ws_triggers, *integration_triggers])
+    sources: list[str] = []
+    if ha_python_triggers:
+        sources.append("ha_device_automation_python")
+    if ha_ws_triggers:
+        sources.append("ha_device_automation_websocket_equivalent")
+    for source in integration_metadata.get("sources", []):
+        source_name = str(source)
+        if source_name not in sources:
+            sources.append(source_name)
+
+    result = TriggerDiscoveryResult(
+        triggers=tuple(triggers),
+        sources=tuple(sources),
+        ha_python_trigger_count=len(ha_python_triggers),
+        ha_ws_equivalent_trigger_count=len(ha_ws_triggers),
+        zha_quirk_trigger_count=int(integration_metadata.get("zha_quirk_trigger_count") or 0),
+        integration_trigger_count=len(integration_triggers),
+        zha_quirk_class=(
+            str(integration_metadata.get("zha_quirk_class"))
+            if integration_metadata.get("zha_quirk_class") is not None
+            else None
+        ),
+        zha_ieee=(
+            str(integration_metadata.get("zha_ieee"))
+            if integration_metadata.get("zha_ieee") is not None
+            else None
+        ),
+        integration_domains=domains,
+        errors=tuple(
+            [
+                *ha_python_errors,
+                *ha_ws_errors,
+                *[str(err) for err in integration_metadata.get("errors", [])],
+            ]
+        ),
+        fetched_at=now,
+    )
+    _set_cached_trigger_discovery(hass, normalized_device_id, result)
+    return result
 
 
 async def async_device_has_triggers(hass: HomeAssistant, device_id: str) -> bool:
@@ -265,6 +496,192 @@ def _registry_looks_remote_like(hass: HomeAssistant, device: dr.DeviceEntry) -> 
     return any(word in text for word in remote_words) and (
         bool(domains.intersection(integration_words)) or any(word in text for word in integration_words)
     )
+
+
+def _zha_ieee_from_device_entry(device: dr.DeviceEntry) -> str | None:
+    for identifier in getattr(device, "identifiers", ()) or ():
+        values = [str(value).strip() for value in identifier if str(value).strip()]
+        if len(values) >= 2 and values[0].lower() == "zha":
+            return values[1]
+    return None
+
+
+def _zha_data_candidates(hass: HomeAssistant) -> list[object]:
+    zha_data = hass.data.get("zha")
+    if zha_data is None:
+        return []
+
+    candidates: list[object] = [zha_data]
+    if isinstance(zha_data, dict):
+        candidates.extend(value for value in zha_data.values() if value is not None)
+        for key in ("zha_gateway", "gateway", "device_manager", "application_controller"):
+            value = zha_data.get(key)
+            if value is not None:
+                candidates.append(value)
+
+    for item in list(candidates):
+        for attr in ("zha_gateway", "gateway", "device_manager", "application_controller"):
+            value = getattr(item, attr, None)
+            if value is not None:
+                candidates.append(value)
+    return candidates
+
+
+def _lookup_zha_device_in_candidate(candidate: object, lookup_keys: set[str]) -> object | None:
+    if isinstance(candidate, dict):
+        for key, value in candidate.items():
+            if str(key) in lookup_keys:
+                return value
+            ieee = getattr(value, "ieee", None) or getattr(value, "ieee_address", None)
+            if ieee is not None and str(ieee) in lookup_keys:
+                return value
+
+    for attr in ("devices", "device_proxies", "_devices", "_device_proxies"):
+        mapping = getattr(candidate, attr, None)
+        if not isinstance(mapping, dict):
+            continue
+        for key, value in mapping.items():
+            if str(key) in lookup_keys:
+                return value
+            ieee = getattr(value, "ieee", None) or getattr(value, "ieee_address", None)
+            if ieee is not None and str(ieee) in lookup_keys:
+                return value
+    return None
+
+
+def _resolve_zha_device_for_ha_device(
+    hass: HomeAssistant,
+    device: dr.DeviceEntry,
+) -> tuple[object | None, str | None, tuple[str, ...]]:
+    ieee = _zha_ieee_from_device_entry(device)
+    lookup_keys = {device.id}
+    if ieee:
+        lookup_keys.add(str(ieee))
+
+    errors: list[str] = []
+    for candidate in _zha_data_candidates(hass):
+        try:
+            found = _lookup_zha_device_in_candidate(candidate, lookup_keys)
+        except Exception as err:  # noqa: BLE001
+            errors.append(f"zha_lookup_error:{type(err).__name__}:{err}")
+            continue
+        if found is not None:
+            return found, ieee, tuple(errors)
+    return None, ieee, tuple([*errors, "zha_device_not_found"])
+
+
+def _unwrap_zha_or_zigpy_device(value: object) -> object:
+    current = value
+    for attr in ("zigpy_device", "_zigpy_device", "device", "_device"):
+        next_value = getattr(current, attr, None)
+        if next_value is not None and next_value is not current:
+            current = next_value
+    return current
+
+
+def _zha_quirk_trigger_to_dict(
+    device_id: str,
+    trigger_key: object,
+    payload: object,
+) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    trigger_type = "zha_event"
+    trigger_subtype = ""
+    if isinstance(trigger_key, tuple):
+        if len(trigger_key) > 0:
+            trigger_type = str(trigger_key[0])
+        if len(trigger_key) > 1:
+            trigger_subtype = str(trigger_key[1])
+    elif trigger_key is not None:
+        trigger_type = str(trigger_key)
+
+    trigger: dict[str, object] = {
+        "platform": "device",
+        "domain": "zha",
+        "device_id": device_id,
+        "type": trigger_type,
+        "subtype": trigger_subtype,
+        "source": "zha_quirk_device_automation_triggers",
+    }
+    for key, value in payload.items():
+        trigger[str(key)] = _json_safe_value(value)
+    return _json_safe_trigger(trigger)
+
+
+def _get_zha_quirk_device_triggers(
+    hass: HomeAssistant,
+    device_id: str,
+    device: dr.DeviceEntry,
+) -> dict[str, object]:
+    zha_device, ieee, lookup_errors = _resolve_zha_device_for_ha_device(hass, device)
+    if zha_device is None:
+        return {
+            "triggers": [],
+            "zha_quirk_class": None,
+            "zha_ieee": ieee,
+            "errors": lookup_errors,
+        }
+
+    zigpy_device = _unwrap_zha_or_zigpy_device(zha_device)
+    class_name = f"{type(zigpy_device).__module__}.{type(zigpy_device).__name__}"
+
+    trigger_map = getattr(zigpy_device, "device_automation_triggers", None)
+    if trigger_map is None:
+        trigger_map = getattr(type(zigpy_device), "device_automation_triggers", None)
+
+    if not isinstance(trigger_map, dict) or not trigger_map:
+        return {
+            "triggers": [],
+            "zha_quirk_class": class_name,
+            "zha_ieee": ieee,
+            "errors": (*lookup_errors, "zha_quirk_triggers_missing"),
+        }
+
+    triggers: list[dict[str, object]] = []
+    for trigger_key, payload in trigger_map.items():
+        trigger = _zha_quirk_trigger_to_dict(device_id, trigger_key, payload)
+        if trigger is not None:
+            triggers.append(trigger)
+
+    return {
+        "triggers": triggers,
+        "zha_quirk_class": class_name,
+        "zha_ieee": ieee,
+        "errors": lookup_errors,
+    }
+
+
+def _get_integration_trigger_fallbacks(
+    hass: HomeAssistant,
+    device_id: str,
+    device: dr.DeviceEntry,
+    domains: tuple[str, ...],
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    triggers: list[dict[str, object]] = []
+    sources: list[str] = []
+    errors: list[str] = []
+    metadata: dict[str, object] = {
+        "sources": sources,
+        "errors": errors,
+        "zha_quirk_trigger_count": 0,
+        "zha_quirk_class": None,
+        "zha_ieee": None,
+    }
+
+    if "zha" in domains:
+        zha_result = _get_zha_quirk_device_triggers(hass, device_id, device)
+        zha_triggers = list(zha_result.get("triggers", []))
+        triggers.extend(zha_triggers)
+        metadata["zha_quirk_trigger_count"] = len(zha_triggers)
+        metadata["zha_quirk_class"] = zha_result.get("zha_quirk_class")
+        metadata["zha_ieee"] = zha_result.get("zha_ieee")
+        errors.extend(str(err) for err in zha_result.get("errors", []))
+        if zha_triggers:
+            sources.append("zha_quirk_device_automation_triggers")
+
+    return triggers, metadata
 
 
 def _is_ignored_dashboard_helper_entity(hass: HomeAssistant, entity_id: str) -> bool:
@@ -390,6 +807,14 @@ def _trigger_diagnostic_to_inventory_item(row: dict[str, Any]) -> dict[str, obje
         "has_labels": bool(row["labels"]),
         "trigger_count": row["trigger_count"],
         "triggers": row.get("triggers", []),
+        "trigger_sources": row.get("trigger_sources", []),
+        "ha_python_trigger_count": row.get("ha_python_trigger_count", 0),
+        "ha_ws_equivalent_trigger_count": row.get("ha_ws_equivalent_trigger_count", 0),
+        "zha_quirk_trigger_count": row.get("zha_quirk_trigger_count", 0),
+        "integration_trigger_count": row.get("integration_trigger_count", 0),
+        "zha_quirk_class": row.get("zha_quirk_class"),
+        "zha_ieee": row.get("zha_ieee"),
+        "trigger_discovery_errors": row.get("trigger_discovery_errors", []),
         "entity_ids": row["entity_ids"],
         "has_actionable_target": bool(row["real_action_entity_ids"] or row["blocking_button_entity_ids"]),
         "registry_remote_like": row["registry_remote_like"],
@@ -442,7 +867,8 @@ async def async_get_trigger_device_diagnostics(hass: HomeAssistant) -> list[dict
             for entity_id in entity_ids
             if _entity_has_real_dashboard_action(hass, entity_id)
         ]
-        triggers = await async_get_device_triggers(hass, device_id)
+        trigger_discovery = await async_get_device_trigger_discovery(hass, device_id)
+        triggers = list(trigger_discovery.triggers)
         registry_remote_like = _registry_looks_remote_like(hass, device)
 
         if not labels:
@@ -465,6 +891,14 @@ async def async_get_trigger_device_diagnostics(hass: HomeAssistant) -> list[dict
                 "has_labels": bool(labels),
                 "trigger_count": len(triggers),
                 "triggers": triggers,
+                "trigger_sources": list(trigger_discovery.sources),
+                "ha_python_trigger_count": trigger_discovery.ha_python_trigger_count,
+                "ha_ws_equivalent_trigger_count": trigger_discovery.ha_ws_equivalent_trigger_count,
+                "zha_quirk_trigger_count": trigger_discovery.zha_quirk_trigger_count,
+                "integration_trigger_count": trigger_discovery.integration_trigger_count,
+                "zha_quirk_class": trigger_discovery.zha_quirk_class,
+                "zha_ieee": trigger_discovery.zha_ieee,
+                "trigger_discovery_errors": list(trigger_discovery.errors),
                 "entity_ids": entity_ids,
                 "real_action_entity_ids": real_action_entity_ids,
                 "blocking_button_entity_ids": blocking_button_entity_ids,
