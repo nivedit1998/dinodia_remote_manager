@@ -30,6 +30,7 @@ from .const import (
     ATTR_TARGET_ENTITY_ID,
     ATTR_TARGET_KIND,
     CONF_BINDING_NAME,
+    CONF_DIAGNOSTICS_ONLY,
     CONF_ENABLED,
     DATA_EVENT_ROUTER,
     DATA_REMOTE_ROUTER,
@@ -105,7 +106,25 @@ SIMULATE_REMOTE_EVENT_SCHEMA = vol.Schema(
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the integration."""
     del config
-    hass.data.setdefault(DOMAIN, {})
+    data = hass.data.setdefault(DOMAIN, {})
+    store = data.get("store")
+    if store is None:
+        store = RemoteBindingStore(hass)
+        await store.async_load()
+        data["store"] = store
+
+    event_router = data.get(DATA_EVENT_ROUTER)
+    if event_router is None:
+        event_router = EventRouter(hass, store)
+        data[DATA_EVENT_ROUTER] = event_router
+
+    remote_router = data.get(DATA_REMOTE_ROUTER)
+    if remote_router is None:
+        remote_router = RemoteRouter(hass, store, event_router)
+        data[DATA_REMOTE_ROUTER] = remote_router
+
+    _register_services_once(hass)
+    _ensure_listener_started(hass)
     return True
 
 
@@ -128,8 +147,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         remote_router = RemoteRouter(hass, store, event_router)
         data[DATA_REMOTE_ROUTER] = remote_router
 
-    binding = _binding_from_entry(entry)
-    await store.async_upsert_binding(binding)
+    diagnostics_only = bool(entry.data.get(CONF_DIAGNOSTICS_ONLY, False))
+    remote_device_id = str(entry.data.get(ATTR_REMOTE_DEVICE_ID) or "").strip()
+    if not diagnostics_only and remote_device_id:
+        binding = _binding_from_entry(entry)
+        await store.async_upsert_binding(binding)
     data.setdefault("entries", set()).add(entry.entry_id)
     _register_services_once(hass)
     _ensure_listener_started(hass)

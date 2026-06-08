@@ -23,6 +23,7 @@ ATTR_EVENT_PAYLOAD = "payload"
 ATTR_HANDLED_BY_SERVICE = "handled_by_service"
 
 CONF_BINDING_NAME = "binding_name"
+CONF_DIAGNOSTICS_ONLY = "diagnostics_only"
 CONF_ENABLED = "enabled"
 
 SERVICE_REGISTER_BINDING = "register_binding"
