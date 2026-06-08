@@ -4,9 +4,9 @@
     "step": {
       "user": {
         "title": "Create remote binding",
-        "description": "Bind a Remote-labeled device to a target device or entity.",
+        "description": "Bind a labelled trigger-capable device to a target device or entity.",
         "data": {
-          "remote_device_id": "Remote device",
+          "remote_device_id": "Trigger device",
           "binding_name": "Binding name"
         }
       },
@@ -30,12 +30,12 @@
       }
     },
     "error": {
-      "remote_required": "Select a remote device.",
+      "remote_required": "Select a trigger device.",
       "target_required": "Select a target.",
-      "remote_and_target_same": "Remote and target cannot be the same device.",
+      "remote_and_target_same": "Trigger device and target cannot be the same device.",
       "unsupported_target": "That target does not expose a supported control profile.",
       "invalid_target_mode": "Choose a valid target type.",
-      "no_remote_devices": "No Remote-labeled devices were found.",
+      "no_remote_devices": "No labelled trigger-capable devices were found.",
       "no_supported_target_devices": "No supported target devices were found.",
       "no_supported_target_entities": "No supported target entities were found."
     }

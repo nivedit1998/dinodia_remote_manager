@@ -80,7 +80,7 @@ list_bindings:
 
 list_trigger_devices:
   name: List trigger devices
-  description: Return devices that expose Home Assistant device triggers for Dinodia trigger-device discovery.
+  description: Return labelled devices that expose Home Assistant device triggers and have no actionable target for Dinodia trigger-device discovery.
 
 simulate_remote_event:
   name: Simulate remote event
