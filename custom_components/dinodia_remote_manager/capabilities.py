@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import re
+from typing import Any
 
 from homeassistant.components.device_automation import async_get_device_automations
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er, label_registry as lr
 
 from .binding_rules import ActionProfile, resolve_action_profile
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,27 +36,40 @@ PASSIVE_HELPER_DOMAINS = {
 
 IGNORED_BUTTON_ACTION_WORDS = {
     "identify",
+    "identify_button",
     "ping",
     "locate",
+    "find",
+    "find_my",
     "diagnostic",
 }
 
-BLOCKING_BUTTON_ACTION_WORDS = {
-    "restart",
-    "reboot",
-    "reset",
-    "factory_reset",
-    "factory reset",
-    "start",
-    "stop",
-    "pairing",
-    "pairing_mode",
-    "pairing mode",
-    "clean",
-    "wash",
-    "brew",
-    "boil",
-    "dispense",
+PASSIVE_HELPER_DEVICE_CLASSES = {
+    "battery",
+    "signal_strength",
+    "voltage",
+    "current",
+    "power_factor",
+    "linkquality",
+    "rssi",
+    "lqi",
+    "last_seen",
+    "timestamp",
+    "enum",
+    "connectivity",
+    "problem",
+    "update",
+}
+
+PASSIVE_HELPER_WORDS = {
+    "battery",
+    "linkquality",
+    "lqi",
+    "rssi",
+    "last_seen",
+    "last_seen_time",
+    "voltage",
+    "signal_strength",
 }
 
 
@@ -148,7 +164,6 @@ def _stable_entity_classification_text(hass: HomeAssistant, entity_id: str) -> s
     entity_entry = _entity_registry_entry(hass, entity_id)
     if entity_entry is not None:
         for value in (
-            getattr(entity_entry, "original_name", None),
             getattr(entity_entry, "original_device_class", None),
             getattr(entity_entry, "entity_category", None),
             getattr(entity_entry, "platform", None),
@@ -166,12 +181,24 @@ def _stable_entity_classification_text(hass: HomeAssistant, entity_id: str) -> s
     return " ".join(parts).replace("_", " ").replace("-", " ").lower()
 
 
+def _normalize_token(value: object | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+
+
 def _classification_text_has_any(text: str, words: set[str]) -> bool:
-    normalized = f" {text.replace('_', ' ').replace('-', ' ').lower()} "
-    return any(
-        f" {word.replace('_', ' ').replace('-', ' ').lower()} " in normalized
-        for word in words
-    )
+    normalized = _normalize_token(text)
+    for word in words:
+        token = _normalize_token(word)
+        if not token:
+            continue
+        if (
+            normalized == token
+            or normalized.startswith(f"{token}_")
+            or normalized.endswith(f"_{token}")
+            or f"_{token}_" in normalized
+        ):
+            return True
+    return False
 
 
 async def async_get_device_triggers(hass: HomeAssistant, device_id: str) -> list[dict[str, object]]:
@@ -242,11 +269,28 @@ def _registry_looks_remote_like(hass: HomeAssistant, device: dr.DeviceEntry) -> 
 
 def _is_ignored_dashboard_helper_entity(hass: HomeAssistant, entity_id: str) -> bool:
     domain = _supported_domain_from_entity(entity_id)
-    if domain in PASSIVE_HELPER_DOMAINS:
+    entity_entry = _entity_registry_entry(hass, entity_id)
+    entity_category = _normalize_token(getattr(entity_entry, "entity_category", None))
+    device_class = _normalize_token(getattr(entity_entry, "original_device_class", None))
+    state = hass.states.get(entity_id)
+    if state is not None:
+        entity_category = entity_category or _normalize_token(state.attributes.get("entity_category"))
+        device_class = device_class or _normalize_token(state.attributes.get("device_class"))
+    text = _stable_entity_classification_text(hass, entity_id)
+
+    if entity_category == "diagnostic":
         return True
+
+    if domain in PASSIVE_HELPER_DOMAINS:
+        return device_class in PASSIVE_HELPER_DEVICE_CLASSES or _classification_text_has_any(
+            text, PASSIVE_HELPER_WORDS
+        )
+
     if domain != "button":
         return False
-    text = _stable_entity_classification_text(hass, entity_id)
+
+    if device_class == "identify":
+        return True
     return _classification_text_has_any(text, IGNORED_BUTTON_ACTION_WORDS)
 
 
@@ -256,6 +300,7 @@ def _is_blocking_button_action_entity(hass: HomeAssistant, entity_id: str) -> bo
         return False
     if _is_ignored_dashboard_helper_entity(hass, entity_id):
         return False
+    # Conservative by design: any non-helper button may cause a real side effect.
     return True
 
 
@@ -323,7 +368,46 @@ async def async_get_supported_target_entity_choices(hass: HomeAssistant) -> dict
     return dict(sorted(choices.items(), key=lambda item: item[1].lower()))
 
 
-async def async_get_trigger_device_inventory(hass: HomeAssistant) -> list[dict[str, object]]:
+def _bound_remote_device_ids(hass: HomeAssistant) -> set[str]:
+    store = hass.data.get(DOMAIN, {}).get("store")
+    if store is None or not hasattr(store, "async_list_bindings"):
+        return set()
+    try:
+        return {
+            str(binding.remote_device_id).strip()
+            for binding in store.async_list_bindings()
+            if str(getattr(binding, "remote_device_id", "") or "").strip()
+        }
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _trigger_diagnostic_to_inventory_item(row: dict[str, Any]) -> dict[str, object]:
+    return {
+        "device_id": row["device_id"],
+        "name": row["name"],
+        "labels": row["labels"],
+        "has_labels": bool(row["labels"]),
+        "trigger_count": row["trigger_count"],
+        "triggers": row.get("triggers", []),
+        "entity_ids": row["entity_ids"],
+        "has_actionable_target": bool(row["real_action_entity_ids"] or row["blocking_button_entity_ids"]),
+        "registry_remote_like": row["registry_remote_like"],
+        "diagnostic_only": bool(row["entity_ids"])
+        and not bool(row["real_action_entity_ids"] or row["blocking_button_entity_ids"]),
+        "trigger_required": True,
+        "real_action_entity_ids": row["real_action_entity_ids"],
+        "blocking_button_entity_ids": row["blocking_button_entity_ids"],
+        "ignored_helper_entity_ids": row["ignored_helper_entity_ids"],
+        "trigger_classification": "labelled_triggers_no_actions",
+        "integration_domains": row["integration_domains"],
+        "manufacturer": row["manufacturer"],
+        "model": row["model"],
+        "reason": "device_triggers",
+    }
+
+
+async def async_get_trigger_device_diagnostics(hass: HomeAssistant) -> list[dict[str, object]]:
     device_reg = dr.async_get(hass)
     entity_reg = er.async_get(hass)
     device_to_entities: dict[str, list[str]] = {}
@@ -333,10 +417,16 @@ async def async_get_trigger_device_inventory(hass: HomeAssistant) -> list[dict[s
             continue
         device_to_entities.setdefault(entity.device_id, []).append(entity.entity_id)
 
+    bound_device_ids = _bound_remote_device_ids(hass)
     result: list[dict[str, object]] = []
     for device in device_reg.devices.values():
         device_id = device.id
         entity_ids = device_to_entities.get(device_id, [])
+        labels = _device_and_entity_labels(hass, device_id)
+
+        if not labels and device_id not in bound_device_ids:
+            continue
+
         ignored_helper_entity_ids = [
             entity_id
             for entity_id in entity_ids
@@ -352,21 +442,21 @@ async def async_get_trigger_device_inventory(hass: HomeAssistant) -> list[dict[s
             for entity_id in entity_ids
             if _entity_has_real_dashboard_action(hass, entity_id)
         ]
-        has_actionable_target = bool(real_action_entity_ids or blocking_button_entity_ids)
         triggers = await async_get_device_triggers(hass, device_id)
-        labels = _device_and_entity_labels(hass, device_id)
         registry_remote_like = _registry_looks_remote_like(hass, device)
-        diagnostic_only = bool(entity_ids) and not has_actionable_target
 
         if not labels:
-            continue
-        if has_actionable_target:
-            continue
-        if not triggers:
-            continue
+            reject_reason = "unlabelled"
+        elif not triggers:
+            reject_reason = "no_triggers"
+        elif blocking_button_entity_ids:
+            reject_reason = "blocking_button_entities"
+        elif real_action_entity_ids:
+            reject_reason = "real_action_entities"
+        else:
+            reject_reason = "accepted"
 
         domains = sorted(_integration_domains_for_device(hass, device))
-        reason = "device_triggers"
         result.append(
             {
                 "device_id": device_id,
@@ -376,21 +466,35 @@ async def async_get_trigger_device_inventory(hass: HomeAssistant) -> list[dict[s
                 "trigger_count": len(triggers),
                 "triggers": triggers,
                 "entity_ids": entity_ids,
-                "has_actionable_target": has_actionable_target,
-                "registry_remote_like": registry_remote_like,
-                "diagnostic_only": diagnostic_only,
-                "trigger_required": True,
                 "real_action_entity_ids": real_action_entity_ids,
                 "blocking_button_entity_ids": blocking_button_entity_ids,
                 "ignored_helper_entity_ids": ignored_helper_entity_ids,
-                "trigger_classification": "labelled_triggers_no_actions",
+                "reject_reason": reject_reason,
+                "has_actionable_target": bool(real_action_entity_ids or blocking_button_entity_ids),
+                "registry_remote_like": registry_remote_like,
+                "diagnostic_only": bool(entity_ids)
+                and not bool(real_action_entity_ids or blocking_button_entity_ids),
+                "trigger_required": True,
+                "trigger_classification": (
+                    "labelled_triggers_no_actions"
+                    if reject_reason == "accepted"
+                    else "rejected"
+                ),
                 "integration_domains": domains,
                 "manufacturer": getattr(device, "manufacturer", None),
                 "model": getattr(device, "model", None),
-                "reason": reason,
+                "reason": reject_reason,
             }
         )
     return result
+
+
+async def async_get_trigger_device_inventory(hass: HomeAssistant) -> list[dict[str, object]]:
+    return [
+        _trigger_diagnostic_to_inventory_item(row)
+        for row in await async_get_trigger_device_diagnostics(hass)
+        if row.get("reject_reason") == "accepted"
+    ]
 
 
 def _resolve_entity_choice_for_device(hass: HomeAssistant, entity_ids: list[str]) -> str | None:

@@ -82,6 +82,10 @@ list_trigger_devices:
   name: List trigger devices
   description: Return labelled devices that expose Home Assistant device triggers and have no actionable target for Dinodia trigger-device discovery.
 
+list_trigger_device_diagnostics:
+  name: List trigger device diagnostics
+  description: Return accepted and rejected labelled trigger-device candidates with labels, trigger counts, helper entities, action entities, blocking entities, and rejection reasons.
+
 simulate_remote_event:
   name: Simulate remote event
   description: Fire a normalized remote event through the router for testing.

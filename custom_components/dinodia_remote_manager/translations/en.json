@@ -50,30 +50,38 @@
       }
     }
   },
-    "services": {
-      "register_binding": {
-        "name": "Register binding",
-        "description": "Register a remote-to-target binding."
-      },
-      "update_binding": {
-        "name": "Update binding",
-        "description": "Create or replace the target for one remote binding."
-      },
+  "services": {
+    "register_binding": {
+      "name": "Register binding",
+      "description": "Register a remote-to-target binding."
+    },
+    "update_binding": {
+      "name": "Update binding",
+      "description": "Create or replace the target for one remote binding."
+    },
     "unbind": {
       "name": "Unbind",
       "description": "Remove a binding by binding id or remote device id."
     },
-      "resolve_binding": {
-        "name": "Resolve binding",
-        "description": "Return the computed target capability profile for a binding."
-      },
-      "list_bindings": {
-        "name": "List bindings",
-        "description": "Return all stored remote bindings for diagnostics."
-      },
-      "simulate_remote_event": {
-        "name": "Simulate remote event",
-        "description": "Fire a normalized remote event through the router for testing."
-      }
+    "resolve_binding": {
+      "name": "Resolve binding",
+      "description": "Return the computed target capability profile for a binding."
+    },
+    "list_bindings": {
+      "name": "List bindings",
+      "description": "Return all stored remote bindings for diagnostics."
+    },
+    "simulate_remote_event": {
+      "name": "Simulate remote event",
+      "description": "Fire a normalized remote event through the router for testing."
+    },
+    "list_trigger_devices": {
+      "name": "List trigger devices",
+      "description": "Return labelled devices that expose Home Assistant device triggers and have no actionable target for Dinodia trigger-device discovery."
+    },
+    "list_trigger_device_diagnostics": {
+      "name": "List trigger device diagnostics",
+      "description": "Return accepted and rejected labelled trigger-device candidates with labels, trigger counts, helper entities, action entities, blocking entities, and rejection reasons."
+    }
   }
 }
