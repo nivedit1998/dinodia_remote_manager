@@ -9,9 +9,52 @@ from homeassistant.components.device_automation import async_get_device_automati
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er, label_registry as lr
 
-from .binding_rules import ActionProfile, resolve_action_profile, is_supported_actionable_domain
+from .binding_rules import ActionProfile, resolve_action_profile
 
 _LOGGER = logging.getLogger(__name__)
+
+REAL_DASHBOARD_ACTION_DOMAINS = {
+    "light",
+    "switch",
+    "climate",
+    "cover",
+    "media_player",
+    "fan",
+    "lock",
+    "humidifier",
+    "vacuum",
+}
+
+PASSIVE_HELPER_DOMAINS = {
+    "sensor",
+    "binary_sensor",
+    "event",
+}
+
+IGNORED_BUTTON_ACTION_WORDS = {
+    "identify",
+    "ping",
+    "locate",
+    "diagnostic",
+}
+
+BLOCKING_BUTTON_ACTION_WORDS = {
+    "restart",
+    "reboot",
+    "reset",
+    "factory_reset",
+    "factory reset",
+    "start",
+    "stop",
+    "pairing",
+    "pairing_mode",
+    "pairing mode",
+    "clean",
+    "wash",
+    "brew",
+    "boil",
+    "dispense",
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -94,6 +137,43 @@ def _supported_domain_from_entity(entity_id: str) -> str:
     return (entity_id.split(".")[0] if "." in entity_id else entity_id).strip().lower()
 
 
+def _entity_registry_entry(hass: HomeAssistant, entity_id: str):
+    entity_reg = er.async_get(hass)
+    return entity_reg.async_get(entity_id)
+
+
+def _stable_entity_classification_text(hass: HomeAssistant, entity_id: str) -> str:
+    parts: list[str] = [entity_id]
+
+    entity_entry = _entity_registry_entry(hass, entity_id)
+    if entity_entry is not None:
+        for value in (
+            getattr(entity_entry, "original_name", None),
+            getattr(entity_entry, "original_device_class", None),
+            getattr(entity_entry, "entity_category", None),
+            getattr(entity_entry, "platform", None),
+        ):
+            if value:
+                parts.append(str(value))
+
+    state = hass.states.get(entity_id)
+    if state is not None:
+        for key in ("device_class", "entity_category"):
+            value = state.attributes.get(key)
+            if value:
+                parts.append(str(value))
+
+    return " ".join(parts).replace("_", " ").replace("-", " ").lower()
+
+
+def _classification_text_has_any(text: str, words: set[str]) -> bool:
+    normalized = f" {text.replace('_', ' ').replace('-', ' ').lower()} "
+    return any(
+        f" {word.replace('_', ' ').replace('-', ' ').lower()} " in normalized
+        for word in words
+    )
+
+
 async def async_get_device_triggers(hass: HomeAssistant, device_id: str) -> list[dict[str, object]]:
     try:
         triggers = await async_get_device_automations(hass, "trigger", device_id)
@@ -160,8 +240,33 @@ def _registry_looks_remote_like(hass: HomeAssistant, device: dr.DeviceEntry) -> 
     )
 
 
-def _entity_is_diagnostic_or_trigger_only(entity_id: str) -> bool:
-    return _supported_domain_from_entity(entity_id) in {"button", "sensor", "binary_sensor", "event"}
+def _is_ignored_dashboard_helper_entity(hass: HomeAssistant, entity_id: str) -> bool:
+    domain = _supported_domain_from_entity(entity_id)
+    if domain in PASSIVE_HELPER_DOMAINS:
+        return True
+    if domain != "button":
+        return False
+    text = _stable_entity_classification_text(hass, entity_id)
+    return _classification_text_has_any(text, IGNORED_BUTTON_ACTION_WORDS)
+
+
+def _is_blocking_button_action_entity(hass: HomeAssistant, entity_id: str) -> bool:
+    domain = _supported_domain_from_entity(entity_id)
+    if domain != "button":
+        return False
+    if _is_ignored_dashboard_helper_entity(hass, entity_id):
+        return False
+    return True
+
+
+def _entity_has_real_dashboard_action(hass: HomeAssistant, entity_id: str) -> bool:
+    if _is_ignored_dashboard_helper_entity(hass, entity_id):
+        return False
+    domain = _supported_domain_from_entity(entity_id)
+    if domain not in REAL_DASHBOARD_ACTION_DOMAINS:
+        return False
+    profile = resolve_action_profile(domain)
+    return profile.supported and bool(profile.actions)
 
 
 def _profile_for_entity(entity_id: str) -> ActionProfile:
@@ -205,6 +310,10 @@ async def async_get_supported_target_entity_choices(hass: HomeAssistant) -> dict
     entity_reg = er.async_get(hass)
     choices: dict[str, str] = {}
     for entity in entity_reg.entities.values():
+        if _is_ignored_dashboard_helper_entity(hass, entity.entity_id):
+            continue
+        if _is_blocking_button_action_entity(hass, entity.entity_id):
+            continue
         profile = _profile_for_entity(entity.entity_id)
         if not profile.supported:
             continue
@@ -228,16 +337,26 @@ async def async_get_trigger_device_inventory(hass: HomeAssistant) -> list[dict[s
     for device in device_reg.devices.values():
         device_id = device.id
         entity_ids = device_to_entities.get(device_id, [])
-        target_entity = _resolve_entity_choice_for_device(hass, entity_ids)
-        has_actionable_target = target_entity is not None and is_supported_actionable_domain(
-            _supported_domain_from_entity(target_entity)
-        )
+        ignored_helper_entity_ids = [
+            entity_id
+            for entity_id in entity_ids
+            if _is_ignored_dashboard_helper_entity(hass, entity_id)
+        ]
+        blocking_button_entity_ids = [
+            entity_id
+            for entity_id in entity_ids
+            if _is_blocking_button_action_entity(hass, entity_id)
+        ]
+        real_action_entity_ids = [
+            entity_id
+            for entity_id in entity_ids
+            if _entity_has_real_dashboard_action(hass, entity_id)
+        ]
+        has_actionable_target = bool(real_action_entity_ids or blocking_button_entity_ids)
         triggers = await async_get_device_triggers(hass, device_id)
         labels = _device_and_entity_labels(hass, device_id)
         registry_remote_like = _registry_looks_remote_like(hass, device)
-        diagnostic_only = bool(entity_ids) and all(
-            _entity_is_diagnostic_or_trigger_only(entity_id) for entity_id in entity_ids
-        )
+        diagnostic_only = bool(entity_ids) and not has_actionable_target
 
         if not labels:
             continue
@@ -261,6 +380,10 @@ async def async_get_trigger_device_inventory(hass: HomeAssistant) -> list[dict[s
                 "registry_remote_like": registry_remote_like,
                 "diagnostic_only": diagnostic_only,
                 "trigger_required": True,
+                "real_action_entity_ids": real_action_entity_ids,
+                "blocking_button_entity_ids": blocking_button_entity_ids,
+                "ignored_helper_entity_ids": ignored_helper_entity_ids,
+                "trigger_classification": "labelled_triggers_no_actions",
                 "integration_domains": domains,
                 "manufacturer": getattr(device, "manufacturer", None),
                 "model": getattr(device, "model", None),
@@ -283,7 +406,11 @@ def _resolve_entity_choice_for_device(hass: HomeAssistant, entity_ids: list[str]
     best_rank = 999
     for entity_id in entity_ids:
         domain = _supported_domain_from_entity(entity_id)
-        if domain not in supported_domains and domain not in {"sensor", "binary_sensor", "button"}:
+        if _is_ignored_dashboard_helper_entity(hass, entity_id):
+            continue
+        if _is_blocking_button_action_entity(hass, entity_id):
+            continue
+        if domain not in supported_domains:
             continue
         profile = resolve_action_profile(domain)
         if not profile.supported:
@@ -312,6 +439,30 @@ async def async_resolve_target_capability(
         entity_reg = er.async_get(hass)
         entity = entity_reg.async_get(target_entity_id)
         resolved_device_id = entity.device_id if entity is not None else None
+        if _is_ignored_dashboard_helper_entity(hass, target_entity_id):
+            return ResolvedCapability(
+                target_kind="unsupported",
+                domain=_supported_domain_from_entity(target_entity_id),
+                supported=False,
+                actions=(),
+                description="Diagnostic/helper entities cannot be remote targets",
+                reason="diagnostic_helper_entity",
+                target_device_id=resolved_device_id,
+                target_entity_id=target_entity_id,
+                source="entity",
+            )
+        if _is_blocking_button_action_entity(hass, target_entity_id):
+            return ResolvedCapability(
+                target_kind="unsupported",
+                domain="button",
+                supported=False,
+                actions=(),
+                description="Button action entities cannot be remote targets",
+                reason="button_action_entity",
+                target_device_id=resolved_device_id,
+                target_entity_id=target_entity_id,
+                source="entity",
+            )
         profile = _profile_for_entity(target_entity_id)
         return ResolvedCapability(
             target_kind=profile.target_kind,
