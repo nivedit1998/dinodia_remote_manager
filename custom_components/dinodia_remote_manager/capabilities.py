@@ -9,7 +9,15 @@ import re
 import time
 from typing import Any
 
-from homeassistant.components.device_automation import async_get_device_automations
+try:
+    from homeassistant.components.device_automation import (
+        DeviceAutomationType,
+        async_get_device_automations,
+    )
+except ImportError:  # Older HA versions may not expose DeviceAutomationType.
+    from homeassistant.components.device_automation import async_get_device_automations
+
+    DeviceAutomationType = None  # type: ignore[assignment]
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er, label_registry as lr
 
@@ -298,18 +306,43 @@ def _set_cached_trigger_discovery(
         cache.popitem(last=False)
 
 
+def _ha_trigger_automation_type() -> object:
+    if DeviceAutomationType is not None:
+        return DeviceAutomationType.TRIGGER
+    return "trigger"
+
+
 async def _async_get_ha_python_device_triggers(
     hass: HomeAssistant,
     device_id: str,
 ) -> tuple[list[dict[str, object]], tuple[str, ...]]:
+    normalized_device_id = str(device_id or "").strip()
+    if not normalized_device_id:
+        return [], ("ha_python_trigger_error:empty_device_id",)
+
     try:
-        triggers = await async_get_device_automations(hass, "trigger", device_id)
+        automations_by_device = await async_get_device_automations(
+            hass,
+            _ha_trigger_automation_type(),
+            {normalized_device_id},
+        )
     except Exception as err:  # noqa: BLE001
-        _LOGGER.debug("Unable to list HA Python device triggers for %s: %s", device_id, err)
-        return [], (f"ha_python_trigger_error:{type(err).__name__}:{err}",)
+        message = str(err).strip() or repr(err)
+        _LOGGER.debug("Unable to list HA Python device triggers for %s: %s", normalized_device_id, message)
+        return [], (f"ha_python_trigger_error:{type(err).__name__}:{message}",)
+
+    raw_triggers: list[object] = []
+    if isinstance(automations_by_device, dict):
+        raw_triggers = list(automations_by_device.get(normalized_device_id) or [])
+        if not raw_triggers and len(automations_by_device) == 1:
+            raw_triggers = list(next(iter(automations_by_device.values())) or [])
+    elif isinstance(automations_by_device, list):
+        raw_triggers = automations_by_device
 
     normalized: list[dict[str, object]] = []
-    for trigger in triggers or []:
+    for trigger in raw_triggers:
+        if not isinstance(trigger, dict):
+            continue
         item = dict(trigger)
         item.setdefault("source", "ha_device_automation_python")
         normalized.append(_json_safe_trigger(item))
@@ -563,7 +596,8 @@ def _resolve_zha_device_for_ha_device(
         try:
             found = _lookup_zha_device_in_candidate(candidate, lookup_keys)
         except Exception as err:  # noqa: BLE001
-            errors.append(f"zha_lookup_error:{type(err).__name__}:{err}")
+            message = str(err).strip() or repr(err)
+            errors.append(f"zha_lookup_error:{type(err).__name__}:{message}")
             continue
         if found is not None:
             return found, ieee, tuple(errors)
