@@ -973,6 +973,10 @@ def _resolve_entity_choice_for_device(hass: HomeAssistant, entity_ids: list[str]
         "cover",
         "climate",
         "media_player",
+        "fan",
+        "lock",
+        "vacuum",
+        "humidifier",
     )
     best_entity_id: str | None = None
     best_rank = 999

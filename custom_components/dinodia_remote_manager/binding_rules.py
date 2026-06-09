@@ -71,7 +71,39 @@ def resolve_action_profile(domain: str) -> ActionProfile:
             actions=("play_pause", "volume_up", "volume_down"),
             description="Media player / TV / speaker target",
         )
-    if normalized in {"sensor", "binary_sensor", "button"}:
+    if normalized == "fan":
+        return ActionProfile(
+            target_kind="fan",
+            domain=normalized,
+            supported=True,
+            actions=("turn_on", "turn_off", "toggle", "increase", "decrease"),
+            description="Fan target",
+        )
+    if normalized == "lock":
+        return ActionProfile(
+            target_kind="lock",
+            domain=normalized,
+            supported=True,
+            actions=("lock", "unlock", "toggle"),
+            description="Lock target",
+        )
+    if normalized == "vacuum":
+        return ActionProfile(
+            target_kind="vacuum",
+            domain=normalized,
+            supported=True,
+            actions=("start", "pause", "stop", "return_to_base", "toggle"),
+            description="Vacuum target",
+        )
+    if normalized == "humidifier":
+        return ActionProfile(
+            target_kind="humidifier",
+            domain=normalized,
+            supported=True,
+            actions=("turn_on", "turn_off", "toggle", "humidity_up", "humidity_down"),
+            description="Humidifier target",
+        )
+    if normalized in {"sensor", "binary_sensor", "button", "update", "event"}:
         return ActionProfile(
             target_kind=normalized,
             domain=normalized,
@@ -101,4 +133,3 @@ def resolve_action_profile(domain: str) -> ActionProfile:
 
 def is_supported_actionable_domain(domain: str) -> bool:
     return (domain or "").strip().lower() in SUPPORTED_ACTIONABLE_TARGET_DOMAINS
-

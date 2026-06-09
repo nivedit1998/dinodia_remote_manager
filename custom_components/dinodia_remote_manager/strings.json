@@ -82,6 +82,18 @@
     "list_trigger_device_diagnostics": {
       "name": "List trigger device diagnostics",
       "description": "Return accepted and rejected labelled trigger-device candidates with labels, trigger counts, helper entities, action entities, blocking entities, and rejection reasons."
+    },
+    "set_trigger_target": {
+      "name": "Set trigger target",
+      "description": "Create or replace a trigger-device target binding and create the matching Dinodia Remote Manager entry."
+    },
+    "remove_tenant_bindings": {
+      "name": "Remove tenant bindings",
+      "description": "Remove all trigger-device bindings owned by a Dinodia tenant user."
+    },
+    "remove_trigger_bindings_for_devices": {
+      "name": "Remove trigger bindings for devices",
+      "description": "Remove tenant-owned trigger bindings for specific HA trigger-device IDs."
     }
   }
 }

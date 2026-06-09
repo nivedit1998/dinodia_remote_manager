@@ -70,6 +70,17 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_service(self, user_input: dict | None = None) -> FlowResult:
+        data = dict(user_input or {})
+        binding_id = str(data.get(ATTR_BINDING_ID) or "").strip()
+        remote_device_id = str(data.get(ATTR_REMOTE_DEVICE_ID) or "").strip()
+        if not binding_id or not remote_device_id:
+            return self.async_abort(reason="missing_binding")
+        await self.async_set_unique_id(binding_id)
+        self._abort_if_unique_id_configured(updates=data)
+        title = str(data.get(CONF_BINDING_NAME) or f"{remote_device_id} control").strip()
+        return self.async_create_entry(title=title, data=data)
+
     async def async_step_target_mode(self, user_input: dict | None = None) -> FlowResult:
         if user_input is not None:
             target_mode = str(user_input.get("target_mode") or "").strip()
@@ -273,5 +284,7 @@ class DinodiaRemoteManagerOptionsFlow(config_entries.OptionsFlow):
             target_kind=str(data.get(ATTR_TARGET_KIND) or "unknown").strip() or "unknown",
             binding_name=str(data.get(CONF_BINDING_NAME) or "").strip() or None,
             enabled=bool(data.get(CONF_ENABLED, True)),
+            owner_user_id=str(data.get("owner_user_id") or "").strip() or None,
+            source=str(data.get("source") or "config_flow").strip() or "config_flow",
         )
         await store.async_upsert_binding(binding)

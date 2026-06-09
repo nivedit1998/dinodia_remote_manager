@@ -18,6 +18,44 @@ register_binding:
       required: false
       selector:
         text: {}
+    owner_user_id:
+      required: false
+      selector:
+        text: {}
+
+set_trigger_target:
+  name: Set trigger target
+  description: Create or replace a trigger-device target binding and create the matching Dinodia Remote Manager entry.
+  fields:
+    binding_id:
+      required: false
+      selector:
+        text: {}
+    remote_device_id:
+      required: true
+      selector:
+        text: {}
+    target_device_id:
+      required: false
+      selector:
+        text: {}
+    target_entity_id:
+      required: false
+      selector:
+        text: {}
+    binding_name:
+      required: false
+      selector:
+        text: {}
+    owner_user_id:
+      required: false
+      selector:
+        text: {}
+    create_config_entry:
+      required: false
+      default: true
+      selector:
+        boolean: {}
 
 update_binding:
   name: Update binding
@@ -43,6 +81,32 @@ update_binding:
       required: false
       selector:
         text: {}
+    owner_user_id:
+      required: false
+      selector:
+        text: {}
+
+remove_tenant_bindings:
+  name: Remove tenant bindings
+  description: Remove all trigger-device bindings owned by a Dinodia tenant user.
+  fields:
+    owner_user_id:
+      required: true
+      selector:
+        text: {}
+
+remove_trigger_bindings_for_devices:
+  name: Remove trigger bindings for devices
+  description: Remove tenant-owned trigger bindings for specific HA trigger-device IDs.
+  fields:
+    owner_user_id:
+      required: true
+      selector:
+        text: {}
+    remote_device_ids:
+      required: true
+      selector:
+        object: {}
 
 unbind:
   name: Unbind

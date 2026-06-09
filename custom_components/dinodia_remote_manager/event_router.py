@@ -171,6 +171,14 @@ class EventRouter:
             return self._resolve_climate(action, payload, capability.target_entity_id)
         if kind == "media_player":
             return self._resolve_media_player(action, payload)
+        if kind == "fan":
+            return self._resolve_fan(action, payload, capability.target_entity_id)
+        if kind == "lock":
+            return self._resolve_lock(action, capability.target_entity_id)
+        if kind == "vacuum":
+            return self._resolve_vacuum(action, capability.target_entity_id)
+        if kind == "humidifier":
+            return self._resolve_humidifier(action, payload, capability.target_entity_id)
         return None
 
     def _resolve_light_or_switch(
@@ -262,6 +270,92 @@ class EventRouter:
             return "media_player", "media_next_track", {}
         if action in {"previous"}:
             return "media_player", "media_previous_track", {}
+        return None
+
+    def _resolve_fan(
+        self,
+        action: str,
+        payload: dict[str, Any],
+        target_entity_id: str | None,
+    ) -> tuple[str, str, dict[str, Any]] | None:
+        if action in {"turn_on", "on", "increase"}:
+            return "fan", "turn_on", {}
+        if action in {"turn_off", "off"}:
+            return "fan", "turn_off", {}
+        if action in {"toggle", "short_press"}:
+            return "fan", "toggle", {}
+        if action in {"decrease"}:
+            if target_entity_id is None:
+                return "fan", "turn_off", {}
+            state = self.hass.states.get(target_entity_id)
+            percentage = state.attributes.get("percentage") if state is not None else None
+            if isinstance(percentage, (int, float)) and percentage > 0:
+                return "fan", "set_percentage", {"percentage": max(0, int(percentage) - int(self._step_value(payload, 10)))}
+            return "fan", "turn_off", {}
+        return None
+
+    def _resolve_lock(
+        self,
+        action: str,
+        target_entity_id: str | None,
+    ) -> tuple[str, str, dict[str, Any]] | None:
+        if action in {"lock", "turn_off", "off", "close"}:
+            return "lock", "lock", {}
+        if action in {"unlock", "turn_on", "on", "open"}:
+            return "lock", "unlock", {}
+        if action in {"toggle", "short_press"}:
+            if target_entity_id is None:
+                return "lock", "lock", {}
+            state = self.hass.states.get(target_entity_id)
+            if state is not None and state.state == "locked":
+                return "lock", "unlock", {}
+            return "lock", "lock", {}
+        return None
+
+    def _resolve_vacuum(
+        self,
+        action: str,
+        target_entity_id: str | None,
+    ) -> tuple[str, str, dict[str, Any]] | None:
+        if action in {"turn_on", "on", "start", "toggle", "short_press"}:
+            if target_entity_id is not None:
+                state = self.hass.states.get(target_entity_id)
+                if state is not None and state.state in {"cleaning", "returning"} and action in {"toggle", "short_press"}:
+                    return "vacuum", "pause", {}
+            return "vacuum", "start", {}
+        if action in {"turn_off", "off", "stop"}:
+            return "vacuum", "stop", {}
+        if action in {"pause"}:
+            return "vacuum", "pause", {}
+        if action in {"return_to_base", "close"}:
+            return "vacuum", "return_to_base", {}
+        return None
+
+    def _resolve_humidifier(
+        self,
+        action: str,
+        payload: dict[str, Any],
+        target_entity_id: str | None,
+    ) -> tuple[str, str, dict[str, Any]] | None:
+        if action in {"turn_on", "on"}:
+            return "humidifier", "turn_on", {}
+        if action in {"turn_off", "off"}:
+            return "humidifier", "turn_off", {}
+        if action in {"toggle", "short_press"}:
+            if target_entity_id is None:
+                return "humidifier", "turn_on", {}
+            state = self.hass.states.get(target_entity_id)
+            return "humidifier", "turn_off" if state is not None and state.state == "on" else "turn_on", {}
+        if action in {"increase", "humidity_up", "up", "decrease", "humidity_down", "down"}:
+            if target_entity_id is None:
+                return None
+            state = self.hass.states.get(target_entity_id)
+            current = state.attributes.get("humidity") if state is not None else None
+            if not isinstance(current, (int, float)):
+                return None
+            step = self._step_value(payload, 5)
+            value = float(current) + (step if action in {"increase", "humidity_up", "up"} else -abs(step))
+            return "humidifier", "set_humidity", {"humidity": max(0, min(100, round(value)))}
         return None
 
     def _set_temperature_step(
