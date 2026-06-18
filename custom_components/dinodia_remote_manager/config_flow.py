@@ -181,7 +181,7 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "created_by": "home_assistant_ui",
             "managed_by_dinodia_app": False,
         }
-        await self.async_set_unique_id(f"remote:{self._remote_device_id}")
+        await self.async_set_unique_id(binding_id)
         self._abort_if_unique_id_configured()
         return self.async_create_entry(title=binding_name, data=data)
 

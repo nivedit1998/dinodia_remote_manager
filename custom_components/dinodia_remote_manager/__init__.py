@@ -228,27 +228,14 @@ async def _async_setup_entry_safe(hass: HomeAssistant, entry: ConfigEntry) -> bo
             owner_user_id=entry_binding.owner_user_id,
             source=entry_binding.source,
         )
-        cleanup = await _async_cleanup_duplicate_entries(hass, store, keep_entry_id=entry.entry_id)
-        binding = await store.async_replace_binding_for_remote(
-            binding_id=binding.binding_id,
-            remote_device_id=binding.remote_device_id,
-            target_device_id=binding.target_device_id,
-            target_entity_id=binding.target_entity_id,
-            target_kind=binding.target_kind,
-            binding_name=binding.binding_name,
-            enabled=binding.enabled,
-            owner_user_id=binding.owner_user_id,
-            source=binding.source,
-        )
         clear_trigger_discovery_cache(hass, binding.remote_device_id)
-        listener_result = await async_refresh_binding_listener_safe(hass, binding.remote_device_id)
         data.setdefault("entry_status", {})[entry.entry_id] = {
             "bindingId": binding.binding_id,
             "remoteDeviceId": binding.remote_device_id,
-            "listener": listener_result,
             "loaded": True,
-            "duplicateCleanup": cleanup,
+            "listener": {"attached": False, "reason": "refresh_scheduled"},
         }
+        hass.async_create_task(async_refresh_binding_listener_safe(hass, binding.remote_device_id))
     except Exception as err:  # noqa: BLE001 - keep HA config entry loaded and expose diagnostics
         _LOGGER.exception("Dinodia Remote Manager entry setup failed but entry will stay loaded")
         data.setdefault("entry_status", {})[entry.entry_id] = {
