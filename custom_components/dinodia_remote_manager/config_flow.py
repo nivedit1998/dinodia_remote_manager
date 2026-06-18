@@ -31,6 +31,10 @@ from .const import (
 from .listener_refresh import async_refresh_binding_listener_safe
 from .store import RemoteBinding, RemoteBindingStore
 
+BOOTSTRAP_UNIQUE_ID = "bootstrap"
+BOOTSTRAP_ENTRY_KIND = "bootstrap"
+BOOTSTRAP_TITLE = "Dinodia Remote Manager"
+
 
 class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow."""
@@ -43,6 +47,14 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._target_device_id: str | None = None
         self._target_entity_id: str | None = None
         self._binding_name: str | None = None
+
+    def _has_bootstrap_entry(self) -> bool:
+        for entry in self._async_current_entries():
+            if str(entry.data.get("entry_kind") or "").strip() == BOOTSTRAP_ENTRY_KIND:
+                return True
+            if str(getattr(entry, "unique_id", "") or "").strip() == BOOTSTRAP_UNIQUE_ID:
+                return True
+        return False
 
     async def async_step_user(self, user_input: dict | None = None) -> FlowResult:
         errors: dict[str, str] = {}
@@ -57,7 +69,19 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         remote_choices = await async_get_remote_device_choices(self.hass)
         if not remote_choices:
-            return self.async_abort(reason="no_remote_devices")
+            if self._has_bootstrap_entry():
+                return self.async_abort(reason="bootstrap_ready")
+            await self.async_set_unique_id(BOOTSTRAP_UNIQUE_ID)
+            self._abort_if_unique_id_configured()
+            return self.async_create_entry(
+                title=BOOTSTRAP_TITLE,
+                data={
+                    "entry_kind": BOOTSTRAP_ENTRY_KIND,
+                    "source": "ha_config_flow_bootstrap",
+                    "created_by": "home_assistant_ui",
+                    "managed_by_dinodia_app": False,
+                },
+            )
 
         schema = vol.Schema(
             {
@@ -197,6 +221,8 @@ class DinodiaRemoteManagerOptionsFlow(config_entries.OptionsFlow):
         self._binding_name = config_entry.data.get(CONF_BINDING_NAME)
 
     async def async_step_init(self, user_input: dict | None = None) -> FlowResult:
+        if not self._remote_device_id:
+            return self.async_abort(reason="bootstrap_options_not_supported")
         if user_input is not None:
             new_data = deepcopy(dict(self.config_entry.data))
             new_data[CONF_BINDING_NAME] = str(user_input.get(CONF_BINDING_NAME) or "").strip() or new_data.get(CONF_BINDING_NAME)

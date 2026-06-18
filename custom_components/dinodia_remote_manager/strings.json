@@ -38,6 +38,10 @@
       "no_remote_devices": "No labelled trigger-capable devices were found.",
       "no_supported_target_devices": "No supported target devices were found.",
       "no_supported_target_entities": "No supported target entities were found."
+    },
+    "abort": {
+      "bootstrap_ready": "Dinodia Remote Manager is already active and ready for trigger-device discovery.",
+      "bootstrap_options_not_supported": "This bootstrap entry has no editable binding settings."
     }
   },
   "options": {
