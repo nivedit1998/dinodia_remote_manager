@@ -34,6 +34,9 @@ from .store import RemoteBinding, RemoteBindingStore
 BOOTSTRAP_UNIQUE_ID = "bootstrap"
 BOOTSTRAP_ENTRY_KIND = "bootstrap"
 BOOTSTRAP_TITLE = "Dinodia Remote Manager"
+BOOTSTRAP_SOURCE = "dinodia_auto_bootstrap"
+BOOTSTRAP_CREATED_BY = "dinodia_app"
+BOOTSTRAP_MANAGED_BY_APP = True
 
 
 class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -56,6 +59,24 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return True
         return False
 
+    def _bootstrap_entry_data(self) -> dict:
+        return {
+            "entry_kind": BOOTSTRAP_ENTRY_KIND,
+            "source": BOOTSTRAP_SOURCE,
+            "created_by": BOOTSTRAP_CREATED_BY,
+            "managed_by_dinodia_app": BOOTSTRAP_MANAGED_BY_APP,
+        }
+
+    async def _create_bootstrap_entry(self) -> FlowResult:
+        if self._has_bootstrap_entry():
+            return self.async_abort(reason="bootstrap_ready")
+        await self.async_set_unique_id(BOOTSTRAP_UNIQUE_ID)
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(
+            title=BOOTSTRAP_TITLE,
+            data=self._bootstrap_entry_data(),
+        )
+
     async def async_step_user(self, user_input: dict | None = None) -> FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -69,19 +90,7 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         remote_choices = await async_get_remote_device_choices(self.hass)
         if not remote_choices:
-            if self._has_bootstrap_entry():
-                return self.async_abort(reason="bootstrap_ready")
-            await self.async_set_unique_id(BOOTSTRAP_UNIQUE_ID)
-            self._abort_if_unique_id_configured()
-            return self.async_create_entry(
-                title=BOOTSTRAP_TITLE,
-                data={
-                    "entry_kind": BOOTSTRAP_ENTRY_KIND,
-                    "source": "ha_config_flow_bootstrap",
-                    "created_by": "home_assistant_ui",
-                    "managed_by_dinodia_app": False,
-                },
-            )
+            return await self._create_bootstrap_entry()
 
         schema = vol.Schema(
             {
@@ -97,6 +106,9 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_service(self, user_input: dict | None = None) -> FlowResult:
         data = dict(user_input or {})
+        entry_kind = str(data.get("entry_kind") or "").strip()
+        if entry_kind == BOOTSTRAP_ENTRY_KIND or bool(data.get("bootstrap")):
+            return await self._create_bootstrap_entry()
         binding_id = str(data.get(ATTR_BINDING_ID) or "").strip()
         remote_device_id = str(data.get(ATTR_REMOTE_DEVICE_ID) or "").strip()
         if not binding_id or not remote_device_id:
