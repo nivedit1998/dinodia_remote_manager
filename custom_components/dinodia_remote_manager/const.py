@@ -25,7 +25,6 @@ ATTR_EVENT_PAYLOAD = "payload"
 ATTR_HANDLED_BY_SERVICE = "handled_by_service"
 
 CONF_BINDING_NAME = "binding_name"
-CONF_DIAGNOSTICS_ONLY = "diagnostics_only"
 CONF_ENABLED = "enabled"
 
 SERVICE_REGISTER_BINDING = "register_binding"
@@ -37,7 +36,7 @@ SERVICE_REMOVE_TRIGGER_BINDINGS_FOR_DEVICES = "remove_trigger_bindings_for_devic
 SERVICE_RESOLVE_BINDING = "resolve_binding"
 SERVICE_LIST_BINDINGS = "list_bindings"
 SERVICE_LIST_TRIGGER_DEVICES = "list_trigger_devices"
-SERVICE_LIST_TRIGGER_DEVICE_DIAGNOSTICS = "list_trigger_device_diagnostics"
+SERVICE_LIST_TRIGGER_DEVICE_DASHBOARD = "list_trigger_device_dashboard"
 SERVICE_SIMULATE_REMOTE_EVENT = "simulate_remote_event"
 
 REMOTE_LABEL_NAME = "Remote"

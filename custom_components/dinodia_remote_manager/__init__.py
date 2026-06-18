@@ -13,9 +13,10 @@ from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, cal
 from homeassistant.exceptions import HomeAssistantError
 
 from .capabilities import (
-    async_get_trigger_device_diagnostics,
+    async_get_trigger_device_dashboard_inventory,
     async_get_trigger_device_inventory,
     async_resolve_target_capability,
+    clear_trigger_dashboard_cache,
     clear_trigger_discovery_cache,
 )
 from .const import (
@@ -32,7 +33,6 @@ from .const import (
     ATTR_TARGET_ENTITY_ID,
     ATTR_TARGET_KIND,
     CONF_BINDING_NAME,
-    CONF_DIAGNOSTICS_ONLY,
     CONF_ENABLED,
     DATA_EVENT_ROUTER,
     DATA_REMOTE_ROUTER,
@@ -42,7 +42,7 @@ from .const import (
     EVENT_REMOTE_MANAGER,
     SERVICE_REGISTER_BINDING,
     SERVICE_LIST_BINDINGS,
-    SERVICE_LIST_TRIGGER_DEVICE_DIAGNOSTICS,
+    SERVICE_LIST_TRIGGER_DEVICE_DASHBOARD,
     SERVICE_LIST_TRIGGER_DEVICES,
     SERVICE_REMOVE_TENANT_BINDINGS,
     SERVICE_REMOVE_TRIGGER_BINDINGS_FOR_DEVICES,
@@ -124,7 +124,10 @@ RESOLVE_BINDING_SCHEMA = vol.Schema(
 
 LIST_BINDINGS_SCHEMA = vol.Schema({})
 LIST_TRIGGER_DEVICES_SCHEMA = vol.Schema({})
-LIST_TRIGGER_DEVICE_DIAGNOSTICS_SCHEMA = vol.Schema({})
+LIST_TRIGGER_DEVICE_DASHBOARD_SCHEMA = vol.Schema({
+    vol.Optional(ATTR_REMOTE_DEVICE_ID): str,
+    vol.Optional("device_id"): str,
+})
 
 SIMULATE_REMOTE_EVENT_SCHEMA = vol.Schema(
     {
@@ -203,15 +206,13 @@ async def _async_setup_entry_safe(hass: HomeAssistant, entry: ConfigEntry) -> bo
         remote_router = RemoteRouter(hass, store, event_router)
         data[DATA_REMOTE_ROUTER] = remote_router
 
-    diagnostics_only = bool(entry.data.get(CONF_DIAGNOSTICS_ONLY, False))
     remote_device_id = str(entry.data.get(ATTR_REMOTE_DEVICE_ID) or "").strip()
     data.setdefault("entries", set()).add(entry.entry_id)
     _register_services_once(hass)
     _ensure_listener_started(hass)
-    if diagnostics_only or not remote_device_id:
+    if not remote_device_id:
         data.setdefault("entry_status", {})[entry.entry_id] = {
             "loaded": True,
-            "diagnosticsOnly": diagnostics_only,
         }
         return True
 
@@ -229,6 +230,7 @@ async def _async_setup_entry_safe(hass: HomeAssistant, entry: ConfigEntry) -> bo
             source=entry_binding.source,
         )
         clear_trigger_discovery_cache(hass, binding.remote_device_id)
+        clear_trigger_dashboard_cache(hass, binding.remote_device_id)
         data.setdefault("entry_status", {})[entry.entry_id] = {
             "bindingId": binding.binding_id,
             "remoteDeviceId": binding.remote_device_id,
@@ -562,6 +564,7 @@ async def _async_set_trigger_target(
 
     cleanup_result = await _async_cleanup_duplicate_entries(hass, store)
     clear_trigger_discovery_cache(hass, remote_device_id)
+    clear_trigger_dashboard_cache(hass, remote_device_id)
     _ensure_listener_started(hass)
     listener_result = await async_refresh_binding_listener_safe(hass, remote_device_id)
 
@@ -785,27 +788,12 @@ def _register_services_once(hass: HomeAssistant) -> None:
             "trigger_devices": await async_get_trigger_device_inventory(hass),
         }
 
-    async def handle_list_trigger_device_diagnostics(call: ServiceCall):
-        del call
-        store = _get_store(hass)
-        runtime_unsubs = hass.data.get(DOMAIN, {}).get(DATA_RUNTIME_TRIGGER_UNSUBSCRIBERS, {})
-        listener_status = hass.data.get(DOMAIN, {}).get("listener_status", {})
-        last_listener_error = hass.data.get(DOMAIN, {}).get("last_listener_error")
-        rows = []
-        for row in await async_get_trigger_device_diagnostics(hass):
-            device_id = str(row.get("device_id") or "").strip()
-            bindings = store.async_find_bindings_for_remote_or_binding(remote_device_id=device_id)
-            entries = _find_matching_config_entries(hass, remote_device_id=device_id)
-            row = dict(row)
-            row["binding_count"] = len(bindings)
-            row["config_entry_count"] = len(entries)
-            row["listener_active"] = bool(runtime_unsubs.get(device_id))
-            row["listener"] = listener_status.get(device_id) if isinstance(listener_status, dict) else None
-            row["last_listener_error"] = last_listener_error
-            row["duplicate_config_entry"] = len(entries) > 1
-            rows.append(row)
+    async def handle_list_trigger_device_dashboard(call: ServiceCall):
         return {
-            "candidates": rows,
+            "trigger_devices": await async_get_trigger_device_dashboard_inventory(
+                hass,
+                device_id=str(call.data.get("device_id") or call.data.get(ATTR_REMOTE_DEVICE_ID) or "").strip() or None,
+            ),
         }
 
     async def handle_simulate_remote_event(call: ServiceCall):
@@ -890,9 +878,9 @@ def _register_services_once(hass: HomeAssistant) -> None:
         SupportsResponse.ONLY,
     )
     register_service_once(
-        handle_list_trigger_device_diagnostics,
-        SERVICE_LIST_TRIGGER_DEVICE_DIAGNOSTICS,
-        LIST_TRIGGER_DEVICE_DIAGNOSTICS_SCHEMA,
+        handle_list_trigger_device_dashboard,
+        SERVICE_LIST_TRIGGER_DEVICE_DASHBOARD,
+        LIST_TRIGGER_DEVICE_DASHBOARD_SCHEMA,
         SupportsResponse.ONLY,
     )
     register_service_once(

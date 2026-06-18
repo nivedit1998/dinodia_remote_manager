@@ -79,9 +79,9 @@
       "name": "List trigger devices",
       "description": "Return labelled devices that expose Home Assistant device triggers and have no actionable target for Dinodia trigger-device discovery."
     },
-    "list_trigger_device_diagnostics": {
-      "name": "List trigger device diagnostics",
-      "description": "Return accepted and rejected labelled trigger-device candidates with labels, trigger counts, helper entities, action entities, blocking entities, and rejection reasons."
+    "list_trigger_device_dashboard": {
+      "name": "List trigger device dashboard",
+      "description": "Return accepted trigger devices with compact binding and target details for Dinodia dashboards."
     },
     "set_trigger_target": {
       "name": "Set trigger target",

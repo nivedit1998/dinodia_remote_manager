@@ -25,7 +25,6 @@ from .const import (
     ATTR_TARGET_ENTITY_ID,
     ATTR_TARGET_KIND,
     CONF_BINDING_NAME,
-    CONF_DIAGNOSTICS_ONLY,
     CONF_ENABLED,
     DOMAIN,
 )
@@ -58,7 +57,7 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         remote_choices = await async_get_remote_device_choices(self.hass)
         if not remote_choices:
-            return await self._create_diagnostics_entry()
+            return self.async_abort(reason="no_remote_devices")
 
         schema = vol.Schema(
             {
@@ -184,18 +183,6 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(binding_id)
         self._abort_if_unique_id_configured()
         return self.async_create_entry(title=binding_name, data=data)
-
-    async def _create_diagnostics_entry(self) -> FlowResult:
-        await self.async_set_unique_id(f"{DOMAIN}:diagnostics")
-        self._abort_if_unique_id_configured()
-        return self.async_create_entry(
-            title="Dinodia Remote Manager",
-            data={
-                CONF_DIAGNOSTICS_ONLY: True,
-                CONF_ENABLED: True,
-            },
-        )
-
 
 async def async_get_options_flow(config_entry: config_entries.ConfigEntry):
     return DinodiaRemoteManagerOptionsFlow(config_entry)

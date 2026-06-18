@@ -29,6 +29,9 @@ _LOGGER = logging.getLogger(__name__)
 TRIGGER_DISCOVERY_CACHE_TTL_SECONDS = 30
 TRIGGER_DISCOVERY_CACHE_MAX_ITEMS = 256
 TRIGGER_DISCOVERY_CACHE_KEY = "trigger_discovery_cache"
+TRIGGER_DASHBOARD_CACHE_TTL_SECONDS = 10
+TRIGGER_DASHBOARD_CACHE_MAX_ITEMS = 128
+TRIGGER_DASHBOARD_CACHE_KEY = "trigger_dashboard_cache"
 
 REAL_DASHBOARD_ACTION_DOMAINS = {
     "light",
@@ -323,6 +326,54 @@ def clear_trigger_discovery_cache(hass: HomeAssistant, device_id: str | None = N
         cache.pop(normalized_device_id, None)
         return
     cache.clear()
+
+
+def _trigger_dashboard_cache(hass: HomeAssistant) -> OrderedDict[str, tuple[float, list[dict[str, object]]]]:
+    data = hass.data.setdefault(DOMAIN, {})
+    cache = data.get(TRIGGER_DASHBOARD_CACHE_KEY)
+    if not isinstance(cache, OrderedDict):
+        cache = OrderedDict()
+        data[TRIGGER_DASHBOARD_CACHE_KEY] = cache
+    return cache
+
+
+def _get_cached_trigger_dashboard_inventory(
+    hass: HomeAssistant,
+    cache_key: str,
+) -> list[dict[str, object]] | None:
+    cache = _trigger_dashboard_cache(hass)
+    cached = cache.get(cache_key)
+    if cached is None:
+        return None
+    fetched_at, items = cached
+    if time.monotonic() - fetched_at > TRIGGER_DASHBOARD_CACHE_TTL_SECONDS:
+        cache.pop(cache_key, None)
+        return None
+    cache.move_to_end(cache_key)
+    return [dict(item) for item in items]
+
+
+def _set_cached_trigger_dashboard_inventory(
+    hass: HomeAssistant,
+    cache_key: str,
+    items: list[dict[str, object]],
+) -> None:
+    cache = _trigger_dashboard_cache(hass)
+    cache[cache_key] = (time.monotonic(), [dict(item) for item in items])
+    cache.move_to_end(cache_key)
+    while len(cache) > TRIGGER_DASHBOARD_CACHE_MAX_ITEMS:
+        cache.popitem(last=False)
+
+
+def clear_trigger_dashboard_cache(hass: HomeAssistant, device_id: str | None = None) -> None:
+    cache = _trigger_dashboard_cache(hass)
+    normalized_device_id = str(device_id or "").strip()
+    if not normalized_device_id:
+        cache.clear()
+        return
+    keys_to_remove = [key for key in cache.keys() if key == "all" or key == normalized_device_id]
+    for key in keys_to_remove:
+        cache.pop(key, None)
 
 
 def _ha_trigger_automation_type() -> object:
@@ -852,6 +903,95 @@ def _bound_remote_device_ids(hass: HomeAssistant) -> set[str]:
         return set()
 
 
+def _entity_area_metadata(
+    hass: HomeAssistant,
+    entity: er.RegistryEntry | None,
+    state_name: str | None = None,
+) -> tuple[str | None, str | None]:
+    del state_name
+    area_id = str(getattr(entity, "area_id", "") or "").strip() or None
+    if not area_id:
+        return None, None
+    area = ar.async_get(hass).async_get_area(area_id)
+    area_name = str(area.name).strip() if area is not None and area.name else None
+    return area_id, area_name
+
+
+def _labels_for_target(hass: HomeAssistant, *, device_id: str | None, entity_id: str | None) -> list[str]:
+    labels: list[str] = []
+    if device_id:
+        labels.extend(_device_and_entity_labels(hass, device_id))
+    if entity_id:
+        entity = _entity_registry_entry(hass, entity_id)
+        if entity is not None:
+            for label_id in getattr(entity, "labels", set()) or set():
+                name = _label_name(hass, str(label_id))
+                if name:
+                    labels.append(name)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        key = label.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(label)
+    return deduped
+
+
+def _source_entity_id_for_trigger_candidate(hass: HomeAssistant, entity_ids: list[str]) -> str | None:
+    non_helper_entities = [entity_id for entity_id in entity_ids if not _is_ignored_dashboard_helper_entity(hass, entity_id)]
+    if non_helper_entities:
+        return non_helper_entities[0]
+    return entity_ids[0] if entity_ids else None
+
+
+def _target_summary_for_binding(
+    hass: HomeAssistant,
+    *,
+    target_device_id: str | None,
+    target_entity_id: str | None,
+) -> dict[str, object] | None:
+    if not target_device_id and not target_entity_id:
+        return None
+
+    device_reg = dr.async_get(hass)
+    entity_reg = er.async_get(hass)
+    state = hass.states.get(target_entity_id or "") if target_entity_id else None
+    entity_entry = entity_reg.async_get(target_entity_id) if target_entity_id else None
+    device = device_reg.async_get(target_device_id) if target_device_id else (
+        device_reg.async_get(entity_entry.device_id) if entity_entry and entity_entry.device_id else None
+    )
+
+    resolved_device_id = str(
+        target_device_id
+        or (entity_entry.device_id if entity_entry is not None else "")
+        or ""
+    ).strip() or None
+    resolved_entity_id = str(target_entity_id or "").strip() or None
+    area_id, area_name = _device_area_metadata(hass, device) if device is not None else (None, None)
+    if area_name is None and entity_entry is not None:
+        _, area_name = _entity_area_metadata(hass, entity_entry)
+
+    display_name = (
+        _friendly_device_name(device) if device is not None else None
+    ) or (
+        _friendly_entity_name(entity_entry, state.name if state is not None else None)
+        if entity_entry is not None
+        else None
+    ) or resolved_device_id or resolved_entity_id or "Target unavailable"
+
+    return {
+        "targetId": resolved_device_id or resolved_entity_id or "unresolved",
+        "deviceId": resolved_device_id,
+        "entityId": resolved_entity_id,
+        "name": display_name,
+        "domain": _supported_domain_from_entity(resolved_entity_id or ""),
+        "areaName": area_name,
+        "labels": _labels_for_target(hass, device_id=resolved_device_id, entity_id=resolved_entity_id),
+    }
+
+
 def _trigger_diagnostic_to_inventory_item(row: dict[str, Any]) -> dict[str, object]:
     return {
         "device_id": row["device_id"],
@@ -987,6 +1127,101 @@ async def async_get_trigger_device_inventory(hass: HomeAssistant) -> list[dict[s
         for row in await async_get_trigger_device_diagnostics(hass)
         if row.get("reject_reason") == "accepted"
     ]
+
+
+async def async_get_trigger_device_dashboard_inventory(
+    hass: HomeAssistant,
+    *,
+    device_id: str | None = None,
+    force: bool = False,
+) -> list[dict[str, object]]:
+    normalized_device_id = str(device_id or "").strip()
+    cache_key = normalized_device_id or "all"
+    if not force:
+        cached = _get_cached_trigger_dashboard_inventory(hass, cache_key)
+        if cached is not None:
+            return cached
+
+    inventory = await async_get_trigger_device_inventory(hass)
+    store = hass.data.get(DOMAIN, {}).get("store")
+    bindings_by_remote: dict[str, object] = {}
+    if store is not None and hasattr(store, "async_list_bindings"):
+        try:
+            for binding in store.async_list_bindings():
+                remote_id = str(getattr(binding, "remote_device_id", "") or "").strip()
+                if remote_id and remote_id not in bindings_by_remote:
+                    bindings_by_remote[remote_id] = binding
+        except Exception:  # noqa: BLE001
+            bindings_by_remote = {}
+
+    rows: list[dict[str, object]] = []
+    for item in inventory:
+        current_device_id = str(item.get("device_id") or "").strip()
+        if normalized_device_id and current_device_id != normalized_device_id:
+            continue
+
+        binding = bindings_by_remote.get(current_device_id)
+        binding_api = binding.as_api_dict() if binding is not None and hasattr(binding, "as_api_dict") else None
+        capability = None
+        resolution_state = "unbound"
+        target_summary = None
+        if binding is not None:
+            capability_obj = await async_resolve_target_capability(
+                hass,
+                target_device_id=getattr(binding, "target_device_id", None),
+                target_entity_id=getattr(binding, "target_entity_id", None),
+            )
+            capability = capability_obj.as_api_dict()
+            resolution_state = "bound" if capability_obj.supported else "target_unresolved"
+            target_summary = _target_summary_for_binding(
+                hass,
+                target_device_id=capability_obj.target_device_id or getattr(binding, "target_device_id", None),
+                target_entity_id=capability_obj.target_entity_id or getattr(binding, "target_entity_id", None),
+            )
+            if target_summary is None:
+                resolution_state = "target_unresolved"
+
+        source_entity_id = _source_entity_id_for_trigger_candidate(
+            hass,
+            [str(entity_id) for entity_id in item.get("entity_ids", []) if str(entity_id).strip()],
+        )
+
+        area_id = str(item.get("area_id") or "").strip() or None
+        area_name = str(item.get("area_name") or "").strip() or None
+        if not area_name and source_entity_id:
+            source_entity = _entity_registry_entry(hass, source_entity_id)
+            source_area_id, source_area_name = _entity_area_metadata(hass, source_entity)
+            area_id = area_id or source_area_id
+            area_name = area_name or source_area_name
+
+        rows.append(
+            {
+                "device_id": current_device_id,
+                "name": str(item.get("name") or current_device_id).strip() or current_device_id,
+                "area_id": area_id,
+                "area_name": area_name,
+                "labels": list(item.get("labels") or []),
+                "source_entity_id": source_entity_id,
+                "trigger_count": int(item.get("trigger_count") or 0),
+                "entity_ids": [str(entity_id) for entity_id in item.get("entity_ids", []) if str(entity_id).strip()],
+                "binding": binding_api,
+                "capability": capability,
+                "target": target_summary,
+                "resolution_state": (
+                    "target_unavailable"
+                    if binding is not None and target_summary is None
+                    else resolution_state
+                ),
+            }
+        )
+
+    _set_cached_trigger_dashboard_inventory(hass, cache_key, rows)
+    if not normalized_device_id:
+        for row in rows:
+            row_device_id = str(row.get("device_id") or "").strip()
+            if row_device_id:
+                _set_cached_trigger_dashboard_inventory(hass, row_device_id, [row])
+    return [dict(row) for row in rows]
 
 
 def _resolve_entity_choice_for_device(hass: HomeAssistant, entity_ids: list[str]) -> str | None:
