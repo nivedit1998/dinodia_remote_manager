@@ -189,7 +189,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     diagnostics_only = bool(entry.data.get(CONF_DIAGNOSTICS_ONLY, False))
     remote_device_id = str(entry.data.get(ATTR_REMOTE_DEVICE_ID) or "").strip()
-    if not diagnostics_only and remote_device_id:
+    data.setdefault("entries", set()).add(entry.entry_id)
+    _register_services_once(hass)
+    _ensure_listener_started(hass)
+    if diagnostics_only or not remote_device_id:
+        data.setdefault("entry_status", {})[entry.entry_id] = {
+            "loaded": True,
+            "diagnosticsOnly": diagnostics_only,
+        }
+        return True
+
+    try:
         entry_binding = _binding_from_entry(entry)
         binding = await store.async_replace_binding_for_remote(
             binding_id=entry_binding.binding_id,
@@ -202,10 +212,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             owner_user_id=entry_binding.owner_user_id,
             source=entry_binding.source,
         )
-    data.setdefault("entries", set()).add(entry.entry_id)
-    _register_services_once(hass)
-    _ensure_listener_started(hass)
-    if not diagnostics_only and remote_device_id:
         cleanup = await _async_cleanup_duplicate_entries(hass, store, keep_entry_id=entry.entry_id)
         binding = await store.async_replace_binding_for_remote(
             binding_id=binding.binding_id,
@@ -226,6 +232,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "listener": listener_result,
             "loaded": True,
             "duplicateCleanup": cleanup,
+        }
+    except Exception as err:  # noqa: BLE001 - keep HA config entry loaded and expose diagnostics
+        _LOGGER.exception("Dinodia Remote Manager entry setup failed but entry will stay loaded")
+        data.setdefault("entry_status", {})[entry.entry_id] = {
+            "bindingId": str(entry.data.get(ATTR_BINDING_ID) or entry.entry_id).strip(),
+            "remoteDeviceId": remote_device_id,
+            "loaded": True,
+            "setupWarning": f"{type(err).__name__}:{err}",
         }
     return True
 
