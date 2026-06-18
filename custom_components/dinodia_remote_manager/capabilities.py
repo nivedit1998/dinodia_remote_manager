@@ -1197,6 +1197,7 @@ async def async_get_trigger_device_dashboard_inventory(
         rows.append(
             {
                 "device_id": current_device_id,
+                "accepted": True,
                 "name": str(item.get("name") or current_device_id).strip() or current_device_id,
                 "area_id": area_id,
                 "area_name": area_name,
