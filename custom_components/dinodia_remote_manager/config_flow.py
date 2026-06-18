@@ -183,7 +183,28 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         }
         await self.async_set_unique_id(f"remote:{self._remote_device_id}")
         self._abort_if_unique_id_configured()
+        stored = await self._persist_binding(data)
+        data[ATTR_BINDING_ID] = stored.binding_id
         return self.async_create_entry(title=binding_name, data=data)
+
+    async def _persist_binding(self, data: dict) -> RemoteBinding:
+        store: RemoteBindingStore | None = self.hass.data.get(DOMAIN, {}).get("store")
+        if store is None:
+            store = RemoteBindingStore(self.hass)
+            await store.async_load()
+            self.hass.data.setdefault(DOMAIN, {})["store"] = store
+
+        return await store.async_replace_binding_for_remote(
+            binding_id=str(data.get(ATTR_BINDING_ID) or "").strip() or None,
+            remote_device_id=str(data.get(ATTR_REMOTE_DEVICE_ID) or "").strip(),
+            target_device_id=str(data.get(ATTR_TARGET_DEVICE_ID) or "").strip() or None,
+            target_entity_id=str(data.get(ATTR_TARGET_ENTITY_ID) or "").strip() or None,
+            target_kind=str(data.get(ATTR_TARGET_KIND) or "unknown").strip() or "unknown",
+            binding_name=str(data.get(CONF_BINDING_NAME) or "").strip() or None,
+            enabled=bool(data.get(CONF_ENABLED, True)),
+            owner_user_id=str(data.get("owner_user_id") or "").strip() or None,
+            source=str(data.get("source") or "config_flow").strip() or "config_flow",
+        )
 
     async def _create_diagnostics_entry(self) -> FlowResult:
         await self.async_set_unique_id(f"{DOMAIN}:diagnostics")
@@ -282,15 +303,16 @@ class DinodiaRemoteManagerOptionsFlow(config_entries.OptionsFlow):
             data_schema=vol.Schema({vol.Required(ATTR_TARGET_ENTITY_ID): vol.In(choices)}),
         )
 
-    async def _persist_binding(self, data: dict) -> None:
+    async def _persist_binding(self, data: dict) -> RemoteBinding:
         store: RemoteBindingStore | None = self.hass.data.get(DOMAIN, {}).get("store")
         if store is None:
             store = RemoteBindingStore(self.hass)
             await store.async_load()
             self.hass.data.setdefault(DOMAIN, {})["store"] = store
 
-        binding = RemoteBinding(
-            binding_id=str(data.get(ATTR_BINDING_ID) or self.config_entry.entry_id).strip(),
+        binding_id = str(data.get(ATTR_BINDING_ID) or getattr(self, "config_entry", None) and self.config_entry.entry_id or "").strip()
+        return await store.async_replace_binding_for_remote(
+            binding_id=binding_id or None,
             remote_device_id=str(data.get(ATTR_REMOTE_DEVICE_ID) or "").strip(),
             target_device_id=str(data.get(ATTR_TARGET_DEVICE_ID) or "").strip() or None,
             target_entity_id=str(data.get(ATTR_TARGET_ENTITY_ID) or "").strip() or None,
@@ -300,4 +322,3 @@ class DinodiaRemoteManagerOptionsFlow(config_entries.OptionsFlow):
             owner_user_id=str(data.get("owner_user_id") or "").strip() or None,
             source=str(data.get("source") or "config_flow").strip() or "config_flow",
         )
-        await store.async_upsert_binding(binding)

@@ -170,6 +170,22 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a config entry."""
+    try:
+        return await _async_setup_entry_safe(hass, entry)
+    except Exception as err:  # noqa: BLE001 - never let a binding entry break HA UI load
+        _LOGGER.exception("Dinodia Remote Manager config entry setup failed but entry will stay loaded")
+        data = hass.data.setdefault(DOMAIN, {})
+        data.setdefault("entry_status", {})[entry.entry_id] = {
+            "bindingId": str(entry.data.get(ATTR_BINDING_ID) or entry.entry_id).strip(),
+            "remoteDeviceId": str(entry.data.get(ATTR_REMOTE_DEVICE_ID) or "").strip(),
+            "loaded": True,
+            "setupWarning": f"{type(err).__name__}:{err}",
+        }
+        return True
+
+
+async def _async_setup_entry_safe(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up a config entry without the outer HA failure guard."""
     data = hass.data.setdefault(DOMAIN, {})
     store = data.get("store")
     if store is None:
@@ -581,6 +597,17 @@ def _register_services_once(hass: HomeAssistant) -> None:
     if data.get("services_registered"):
         return
 
+    def register_service_once(handler: Callable, service: str, schema: vol.Schema, supports_response: SupportsResponse) -> None:
+        if hass.services.has_service(DOMAIN, service):
+            return
+        hass.services.async_register(
+            DOMAIN,
+            service,
+            handler,
+            schema=schema,
+            supports_response=supports_response,
+        )
+
     async def handle_register_binding(call: ServiceCall):
         return await _async_set_trigger_target(
             hass,
@@ -821,82 +848,71 @@ def _register_services_once(hass: HomeAssistant) -> None:
         )
         return result.as_dict()
 
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_REGISTER_BINDING,
+    register_service_once(
         handle_register_binding,
-        schema=REGISTER_BINDING_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
+        SERVICE_REGISTER_BINDING,
+        REGISTER_BINDING_SCHEMA,
+        SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SET_TRIGGER_TARGET,
+    register_service_once(
         handle_set_trigger_target,
-        schema=SET_TRIGGER_TARGET_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
+        SERVICE_SET_TRIGGER_TARGET,
+        SET_TRIGGER_TARGET_SCHEMA,
+        SupportsResponse.ONLY,
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_UPDATE_BINDING,
+    register_service_once(
         handle_update_binding,
-        schema=UPDATE_BINDING_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
+        SERVICE_UPDATE_BINDING,
+        UPDATE_BINDING_SCHEMA,
+        SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_REMOVE_TENANT_BINDINGS,
+    register_service_once(
         handle_remove_tenant_bindings,
-        schema=REMOVE_TENANT_BINDINGS_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
+        SERVICE_REMOVE_TENANT_BINDINGS,
+        REMOVE_TENANT_BINDINGS_SCHEMA,
+        SupportsResponse.ONLY,
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_REMOVE_TRIGGER_BINDINGS_FOR_DEVICES,
+    register_service_once(
         handle_remove_trigger_bindings_for_devices,
-        schema=REMOVE_TRIGGER_BINDINGS_FOR_DEVICES_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
+        SERVICE_REMOVE_TRIGGER_BINDINGS_FOR_DEVICES,
+        REMOVE_TRIGGER_BINDINGS_FOR_DEVICES_SCHEMA,
+        SupportsResponse.ONLY,
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_UNBIND,
+    register_service_once(
         handle_unbind,
-        schema=UNBIND_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
+        SERVICE_UNBIND,
+        UNBIND_SCHEMA,
+        SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_RESOLVE_BINDING,
+    register_service_once(
         handle_resolve_binding,
-        schema=RESOLVE_BINDING_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
+        SERVICE_RESOLVE_BINDING,
+        RESOLVE_BINDING_SCHEMA,
+        SupportsResponse.ONLY,
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_LIST_BINDINGS,
+    register_service_once(
         handle_list_bindings,
-        schema=LIST_BINDINGS_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
+        SERVICE_LIST_BINDINGS,
+        LIST_BINDINGS_SCHEMA,
+        SupportsResponse.ONLY,
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_LIST_TRIGGER_DEVICES,
+    register_service_once(
         handle_list_trigger_devices,
-        schema=LIST_TRIGGER_DEVICES_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
+        SERVICE_LIST_TRIGGER_DEVICES,
+        LIST_TRIGGER_DEVICES_SCHEMA,
+        SupportsResponse.ONLY,
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_LIST_TRIGGER_DEVICE_DIAGNOSTICS,
+    register_service_once(
         handle_list_trigger_device_diagnostics,
-        schema=LIST_TRIGGER_DEVICE_DIAGNOSTICS_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
+        SERVICE_LIST_TRIGGER_DEVICE_DIAGNOSTICS,
+        LIST_TRIGGER_DEVICE_DIAGNOSTICS_SCHEMA,
+        SupportsResponse.ONLY,
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SIMULATE_REMOTE_EVENT,
+    register_service_once(
         handle_simulate_remote_event,
-        schema=SIMULATE_REMOTE_EVENT_SCHEMA,
-        supports_response=SupportsResponse.OPTIONAL,
+        SERVICE_SIMULATE_REMOTE_EVENT,
+        SIMULATE_REMOTE_EVENT_SCHEMA,
+        SupportsResponse.OPTIONAL,
     )
     data["services_registered"] = True
 
