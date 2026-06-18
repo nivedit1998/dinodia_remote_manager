@@ -28,6 +28,26 @@ def _binding_matches_remote(binding: "RemoteBinding", remote_device_id: str) -> 
     return _normalized_identifier(binding.remote_device_id) == _normalized_identifier(remote_device_id)
 
 
+class RemoteBindingStorage(Store[dict[str, Any]]):
+    """HA storage wrapper with explicit migration support."""
+
+    async def _async_migrate_func(
+        self,
+        old_major_version: int,
+        old_minor_version: int,
+        old_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Migrate old binding storage payloads.
+
+        Version 2 only adds optional metadata fields on each binding. Those
+        fields are already defaulted by RemoteBinding.from_dict(), so the data
+        shape can be preserved.
+        """
+        if not isinstance(old_data, dict):
+            return {}
+        return old_data
+
+
 @dataclass(slots=True)
 class RemoteBinding:
     binding_id: str
@@ -81,7 +101,7 @@ class RemoteBindingStore:
     """Store of remote bindings."""
 
     def __init__(self, hass: HomeAssistant) -> None:
-        self._store = Store[dict[str, Any]](hass, DATA_STORE_VERSION, DATA_STORE_KEY)
+        self._store = RemoteBindingStorage(hass, DATA_STORE_VERSION, DATA_STORE_KEY)
         self._bindings: dict[str, RemoteBinding] = {}
         self._loaded = False
 
