@@ -271,11 +271,21 @@ async def async_refresh_runtime_trigger_listener_for_binding(
     async_stop_runtime_trigger_listener(hass, device_id)
     if async_initialize_triggers is None:
         return {"attached": False, "reason": "native_trigger_helper_unavailable", "triggerCount": 0}
-    discovery = await async_get_device_trigger_discovery(hass, device_id)
+    try:
+        discovery = await async_get_device_trigger_discovery(hass, device_id)
+    except Exception as err:  # noqa: BLE001 - listener diagnostics must not break setup
+        result = {
+            "attached": False,
+            "reason": f"trigger_discovery_error:{type(err).__name__}:{err}",
+            "triggerCount": 0,
+        }
+        hass.data.setdefault(DOMAIN, {}).setdefault("listener_status", {})[device_id] = result
+        return result
     trigger_configs = [dict(trigger) for trigger in discovery.triggers if isinstance(trigger, dict)]
     if not trigger_configs:
         return {"attached": False, "reason": "no_triggers", "triggerCount": 0}
     unsubscribers: list[Callable[[], None]] = []
+    errors: list[str] = []
 
     async def _handle_native_trigger(variables: dict[str, Any], trigger_config: dict[str, Any]) -> None:
         trigger_payload = dict(variables.get("trigger") or variables or {})
@@ -317,17 +327,21 @@ async def async_refresh_runtime_trigger_listener_for_binding(
                 if callable(unsubscribe):
                     unsubscribers.append(unsubscribe)
             except Exception as err:  # noqa: BLE001
-                return {"attached": False, "reason": f"native_trigger_attach_error:{type(err).__name__}:{err}", "triggerCount": len(trigger_configs)}
+                errors.append(f"native_trigger_attach_error:{type(err).__name__}:{err}")
         except Exception as err:  # noqa: BLE001
-            return {"attached": False, "reason": f"native_trigger_attach_error:{type(err).__name__}:{err}", "triggerCount": len(trigger_configs)}
+            errors.append(f"native_trigger_attach_error:{type(err).__name__}:{err}")
 
     _runtime_unsubscribers(hass)[device_id] = unsubscribers
-    return {
+    result = {
         "attached": bool(unsubscribers),
-        "reason": None if unsubscribers else "no_unsubscribers",
+        "reason": None if unsubscribers else (errors[0] if errors else "no_unsubscribers"),
         "triggerCount": len(trigger_configs),
+        "attachedCount": len(unsubscribers),
+        "errors": errors,
         "sources": list(discovery.sources),
     }
+    hass.data.setdefault(DOMAIN, {}).setdefault("listener_status", {})[device_id] = result
+    return result
 
 
 async def async_refresh_runtime_trigger_listeners_for_all_bindings(

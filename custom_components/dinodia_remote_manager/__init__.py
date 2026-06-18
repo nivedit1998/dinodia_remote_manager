@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 import voluptuous as vol
@@ -15,6 +16,7 @@ from .capabilities import (
     async_get_trigger_device_diagnostics,
     async_get_trigger_device_inventory,
     async_resolve_target_capability,
+    clear_trigger_discovery_cache,
 )
 from .const import (
     ATTR_BINDING_ID,
@@ -51,10 +53,10 @@ from .const import (
     SERVICE_UPDATE_BINDING,
 )
 from .event_router import EventRouter
+from .listener_refresh import async_refresh_binding_listener_safe
 from .remote_router import RemoteRouter
 from .store import RemoteBinding, RemoteBindingStore
 from .trigger_listener import (
-    async_refresh_runtime_trigger_listener_for_binding,
     async_refresh_runtime_trigger_listeners_for_all_bindings,
     async_start_trigger_listeners,
     async_stop_all_runtime_trigger_listeners,
@@ -62,6 +64,7 @@ from .trigger_listener import (
 )
 
 PLATFORMS: tuple[str, ...] = ()
+_LOGGER = logging.getLogger(__name__)
 
 REGISTER_BINDING_SCHEMA = vol.Schema(
     {
@@ -157,7 +160,11 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
     _register_services_once(hass)
     _ensure_listener_started(hass)
-    await async_refresh_runtime_trigger_listeners_for_all_bindings(hass, remote_router)
+    await _async_cleanup_duplicate_entries(hass, store)
+    try:
+        await async_refresh_runtime_trigger_listeners_for_all_bindings(hass, remote_router)
+    except Exception as err:  # noqa: BLE001 - integration must still load
+        _LOGGER.warning("Dinodia Remote Manager listener restore failed: %s", err)
     return True
 
 
@@ -183,13 +190,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     diagnostics_only = bool(entry.data.get(CONF_DIAGNOSTICS_ONLY, False))
     remote_device_id = str(entry.data.get(ATTR_REMOTE_DEVICE_ID) or "").strip()
     if not diagnostics_only and remote_device_id:
-        binding = _binding_from_entry(entry)
-        await store.async_upsert_binding(binding)
+        entry_binding = _binding_from_entry(entry)
+        binding = await store.async_replace_binding_for_remote(
+            binding_id=entry_binding.binding_id,
+            remote_device_id=entry_binding.remote_device_id,
+            target_device_id=entry_binding.target_device_id,
+            target_entity_id=entry_binding.target_entity_id,
+            target_kind=entry_binding.target_kind,
+            binding_name=entry_binding.binding_name,
+            enabled=entry_binding.enabled,
+            owner_user_id=entry_binding.owner_user_id,
+            source=entry_binding.source,
+        )
     data.setdefault("entries", set()).add(entry.entry_id)
     _register_services_once(hass)
     _ensure_listener_started(hass)
     if not diagnostics_only and remote_device_id:
-        await async_refresh_runtime_trigger_listener_for_binding(hass, remote_router, binding.remote_device_id)
+        cleanup = await _async_cleanup_duplicate_entries(hass, store, keep_entry_id=entry.entry_id)
+        binding = await store.async_replace_binding_for_remote(
+            binding_id=binding.binding_id,
+            remote_device_id=binding.remote_device_id,
+            target_device_id=binding.target_device_id,
+            target_entity_id=binding.target_entity_id,
+            target_kind=binding.target_kind,
+            binding_name=binding.binding_name,
+            enabled=binding.enabled,
+            owner_user_id=binding.owner_user_id,
+            source=binding.source,
+        )
+        clear_trigger_discovery_cache(hass, binding.remote_device_id)
+        listener_result = await async_refresh_binding_listener_safe(hass, binding.remote_device_id)
+        data.setdefault("entry_status", {})[entry.entry_id] = {
+            "bindingId": binding.binding_id,
+            "remoteDeviceId": binding.remote_device_id,
+            "listener": listener_result,
+            "loaded": True,
+            "duplicateCleanup": cleanup,
+        }
     return True
 
 
@@ -295,6 +332,66 @@ def _find_matching_config_entries(
         if owner_user_id and str(data.get("owner_user_id") or "").strip() == owner_user_id:
             matches.append(entry)
     return matches
+
+
+async def _async_cleanup_duplicate_entries(
+    hass: HomeAssistant,
+    store: RemoteBindingStore,
+    *,
+    keep_entry_id: str | None = None,
+) -> dict[str, object]:
+    """Collapse duplicate config entries and store bindings to one per trigger device."""
+    removed_entries = 0
+    errors: list[str] = []
+
+    entries_by_remote: dict[str, list[ConfigEntry]] = {}
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        remote_device_id = str(entry.data.get(ATTR_REMOTE_DEVICE_ID) or "").strip()
+        if not remote_device_id:
+            continue
+        entries_by_remote.setdefault(remote_device_id, []).append(entry)
+
+    for remote_device_id, entries in entries_by_remote.items():
+        if len(entries) <= 1:
+            continue
+        keep_entry = next((entry for entry in entries if entry.entry_id == keep_entry_id), None)
+        if keep_entry is None:
+            existing_binding = store.async_get_binding_by_remote(remote_device_id)
+            if existing_binding is not None:
+                keep_entry = next(
+                    (
+                        entry
+                        for entry in entries
+                        if str(entry.data.get(ATTR_BINDING_ID) or entry.entry_id).strip()
+                        == existing_binding.binding_id
+                    ),
+                    None,
+                )
+        if keep_entry is None:
+            keep_entry = sorted(entries, key=lambda item: item.entry_id)[-1]
+
+        for entry in entries:
+            if entry.entry_id == keep_entry.entry_id:
+                continue
+            try:
+                await hass.config_entries.async_remove(entry.entry_id)
+                removed_entries += 1
+            except Exception as err:  # noqa: BLE001
+                errors.append(f"{entry.entry_id}:{type(err).__name__}:{err}")
+
+    for binding in list(store.async_list_bindings()):
+        if not binding.remote_device_id:
+            continue
+        matches = store.async_find_bindings_for_remote_or_binding(remote_device_id=binding.remote_device_id)
+        if len(matches) <= 1:
+            continue
+        keep = sorted(matches, key=lambda item: item.updated_at or item.created_at or item.binding_id)[-1]
+        for stale in matches:
+            if stale.binding_id == keep.binding_id:
+                continue
+            await store.async_remove_binding(binding_id=stale.binding_id)
+
+    return {"removedConfigEntries": removed_entries, "errors": errors}
 
 
 async def _async_ensure_binding_config_entry(
@@ -446,11 +543,10 @@ async def _async_set_trigger_target(
             await store.async_remove_binding(binding_id=binding.binding_id)
         raise HomeAssistantError("Could not create Dinodia Remote Manager entry")
 
+    cleanup_result = await _async_cleanup_duplicate_entries(hass, store)
+    clear_trigger_discovery_cache(hass, remote_device_id)
     _ensure_listener_started(hass)
-    remote_router: RemoteRouter | None = hass.data.get(DOMAIN, {}).get(DATA_REMOTE_ROUTER)
-    listener_result: dict[str, object] = {"attached": False, "reason": "remote_router_unavailable", "triggerCount": 0}
-    if remote_router is not None:
-        listener_result = await async_refresh_runtime_trigger_listener_for_binding(hass, remote_router, remote_device_id)
+    listener_result = await async_refresh_binding_listener_safe(hass, remote_device_id)
 
     resolved = store.async_find_binding(remote_device_id=remote_device_id)
     if resolved is None:
@@ -461,6 +557,7 @@ async def _async_set_trigger_target(
         "capability": capability.as_api_dict(),
         "configEntry": config_entry_result,
         "listener": listener_result,
+        "duplicateCleanup": cleanup_result,
         "verified": True,
     }
 
@@ -603,6 +700,9 @@ def _register_services_once(hass: HomeAssistant) -> None:
             for item in await async_get_trigger_device_inventory(hass)
         }
         runtime_unsubs = hass.data.get(DOMAIN, {}).get(DATA_RUNTIME_TRIGGER_UNSUBSCRIBERS, {})
+        listener_status = hass.data.get(DOMAIN, {}).get("listener_status", {})
+        entry_status = hass.data.get(DOMAIN, {}).get("entry_status", {})
+        last_listener_error = hass.data.get(DOMAIN, {}).get("last_listener_error")
         last_route = hass.data.get(DOMAIN, {}).get("last_route_result")
         last_raw = hass.data.get(DOMAIN, {}).get("last_raw_callback_payload")
         rows = []
@@ -617,16 +717,34 @@ def _register_services_once(hass: HomeAssistant) -> None:
                 binding_id=binding.binding_id,
                 remote_device_id=binding.remote_device_id,
             )
+            entry = entries[0] if entries else None
+            binding_listener_status = (
+                listener_status.get(binding.remote_device_id)
+                if isinstance(listener_status, dict)
+                else None
+            )
+            active_listener = bool(runtime_unsubs.get(binding.remote_device_id))
+            accepted = binding.remote_device_id in accepted_ids
+            binding_usable = accepted and active_listener
             rows.append(
                 {
                     "binding": binding.as_api_dict(),
                     "hasConfigEntry": bool(entries),
-                    "configEntryId": entries[0].entry_id if entries else None,
+                    "configEntryId": entry.entry_id if entry else None,
+                    "entryLoaded": True if entry else None,
+                    "entryStatus": str(getattr(entry, "state", "")) if entry else None,
+                    "entryStatusDetails": entry_status.get(entry.entry_id) if entry and isinstance(entry_status, dict) else None,
                     "capability": capability.as_api_dict(),
-                    "acceptedTriggerDevice": binding.remote_device_id in accepted_ids,
-                    "listenerActive": bool(runtime_unsubs.get(binding.remote_device_id)),
+                    "acceptedTriggerDevice": accepted,
+                    "listenerActive": active_listener,
+                    "listener": binding_listener_status,
+                    "bindingUsable": binding_usable,
+                    "reason": None if binding_usable else ("listener_not_attached" if accepted else "trigger_device_not_accepted"),
+                    "warning": None if active_listener else "listener_not_attached",
+                    "lastListenerError": last_listener_error,
                     "lastRoute": last_route,
                     "lastRawCallbackPayload": last_raw,
+                    "duplicateConfigEntry": len(entries) > 1,
                 }
             )
         return {
@@ -641,8 +759,25 @@ def _register_services_once(hass: HomeAssistant) -> None:
 
     async def handle_list_trigger_device_diagnostics(call: ServiceCall):
         del call
+        store = _get_store(hass)
+        runtime_unsubs = hass.data.get(DOMAIN, {}).get(DATA_RUNTIME_TRIGGER_UNSUBSCRIBERS, {})
+        listener_status = hass.data.get(DOMAIN, {}).get("listener_status", {})
+        last_listener_error = hass.data.get(DOMAIN, {}).get("last_listener_error")
+        rows = []
+        for row in await async_get_trigger_device_diagnostics(hass):
+            device_id = str(row.get("device_id") or "").strip()
+            bindings = store.async_find_bindings_for_remote_or_binding(remote_device_id=device_id)
+            entries = _find_matching_config_entries(hass, remote_device_id=device_id)
+            row = dict(row)
+            row["binding_count"] = len(bindings)
+            row["config_entry_count"] = len(entries)
+            row["listener_active"] = bool(runtime_unsubs.get(device_id))
+            row["listener"] = listener_status.get(device_id) if isinstance(listener_status, dict) else None
+            row["last_listener_error"] = last_listener_error
+            row["duplicate_config_entry"] = len(entries) > 1
+            rows.append(row)
         return {
-            "candidates": await async_get_trigger_device_diagnostics(hass),
+            "candidates": rows,
         }
 
     async def handle_simulate_remote_event(call: ServiceCall):

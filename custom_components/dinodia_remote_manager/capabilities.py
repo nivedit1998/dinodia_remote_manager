@@ -19,7 +19,7 @@ except ImportError:  # Older HA versions may not expose DeviceAutomationType.
 
     DeviceAutomationType = None  # type: ignore[assignment]
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr, entity_registry as er, label_registry as lr
+from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er, label_registry as lr
 
 from .binding_rules import ActionProfile, resolve_action_profile
 from .const import DOMAIN
@@ -173,6 +173,15 @@ def _friendly_device_name(device: dr.DeviceEntry) -> str:
     return name or device.id
 
 
+def _device_area_metadata(hass: HomeAssistant, device: dr.DeviceEntry) -> tuple[str | None, str | None]:
+    area_id = str(getattr(device, "area_id", "") or "").strip() or None
+    if not area_id:
+        return None, None
+    area = ar.async_get(hass).async_get_area(area_id)
+    area_name = str(area.name).strip() if area is not None and area.name else None
+    return area_id, area_name
+
+
 def _friendly_entity_name(entity: er.RegistryEntry, state_name: str | None) -> str:
     name = (state_name or entity.original_name or entity.name or entity.entity_id).strip()
     return name or entity.entity_id
@@ -304,6 +313,16 @@ def _set_cached_trigger_discovery(
     cache.move_to_end(device_id)
     while len(cache) > TRIGGER_DISCOVERY_CACHE_MAX_ITEMS:
         cache.popitem(last=False)
+
+
+def clear_trigger_discovery_cache(hass: HomeAssistant, device_id: str | None = None) -> None:
+    """Clear trigger discovery cache for one device or all devices."""
+    cache = _trigger_discovery_cache(hass)
+    normalized_device_id = str(device_id or "").strip()
+    if normalized_device_id:
+        cache.pop(normalized_device_id, None)
+        return
+    cache.clear()
 
 
 def _ha_trigger_automation_type() -> object:
@@ -837,6 +856,8 @@ def _trigger_diagnostic_to_inventory_item(row: dict[str, Any]) -> dict[str, obje
     return {
         "device_id": row["device_id"],
         "name": row["name"],
+        "area_id": row.get("area_id"),
+        "area_name": row.get("area_name"),
         "labels": row["labels"],
         "has_labels": bool(row["labels"]),
         "trigger_count": row["trigger_count"],
@@ -904,6 +925,7 @@ async def async_get_trigger_device_diagnostics(hass: HomeAssistant) -> list[dict
         trigger_discovery = await async_get_device_trigger_discovery(hass, device_id)
         triggers = list(trigger_discovery.triggers)
         registry_remote_like = _registry_looks_remote_like(hass, device)
+        area_id, area_name = _device_area_metadata(hass, device)
 
         if not labels:
             reject_reason = "unlabelled"
@@ -921,6 +943,8 @@ async def async_get_trigger_device_diagnostics(hass: HomeAssistant) -> list[dict
             {
                 "device_id": device_id,
                 "name": _friendly_device_name(device),
+                "area_id": area_id,
+                "area_name": area_name,
                 "labels": labels,
                 "has_labels": bool(labels),
                 "trigger_count": len(triggers),

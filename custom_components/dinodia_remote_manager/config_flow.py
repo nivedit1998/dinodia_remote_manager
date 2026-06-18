@@ -16,6 +16,7 @@ from .capabilities import (
     async_get_supported_target_device_choices,
     async_get_supported_target_entity_choices,
     async_resolve_target_capability,
+    clear_trigger_discovery_cache,
 )
 from .const import (
     ATTR_BINDING_ID,
@@ -28,6 +29,7 @@ from .const import (
     CONF_ENABLED,
     DOMAIN,
 )
+from .listener_refresh import async_refresh_binding_listener_safe
 from .store import RemoteBinding, RemoteBindingStore
 
 
@@ -76,7 +78,7 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         remote_device_id = str(data.get(ATTR_REMOTE_DEVICE_ID) or "").strip()
         if not binding_id or not remote_device_id:
             return self.async_abort(reason="missing_binding")
-        await self.async_set_unique_id(binding_id)
+        await self.async_set_unique_id(f"remote:{remote_device_id}")
         self._abort_if_unique_id_configured(updates=data)
         title = str(data.get(CONF_BINDING_NAME) or f"{remote_device_id} control").strip()
         return self.async_create_entry(title=title, data=data)
@@ -175,8 +177,11 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ATTR_TARGET_KIND: target_kind,
             CONF_BINDING_NAME: binding_name,
             CONF_ENABLED: True,
+            "source": "ha_config_flow",
+            "created_by": "home_assistant_ui",
+            "managed_by_dinodia_app": False,
         }
-        await self.async_set_unique_id(binding_id)
+        await self.async_set_unique_id(f"remote:{self._remote_device_id}")
         self._abort_if_unique_id_configured()
         return self.async_create_entry(title=binding_name, data=data)
 
@@ -242,8 +247,12 @@ class DinodiaRemoteManagerOptionsFlow(config_entries.OptionsFlow):
                 new_data[ATTR_TARGET_ENTITY_ID] = capability.target_entity_id
                 new_data[ATTR_TARGET_KIND] = capability.target_kind
                 new_data[CONF_BINDING_NAME] = self._binding_name or self.config_entry.title
+                new_data.setdefault("source", "ha_config_flow")
+                new_data.setdefault("created_by", "home_assistant_ui")
                 self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
                 await self._persist_binding(new_data)
+                clear_trigger_discovery_cache(self.hass, str(new_data.get(ATTR_REMOTE_DEVICE_ID) or "").strip())
+                await async_refresh_binding_listener_safe(self.hass, str(new_data.get(ATTR_REMOTE_DEVICE_ID) or "").strip())
                 return self.async_create_entry(data={})
         return self.async_show_form(
             step_id="target_device",
@@ -261,8 +270,12 @@ class DinodiaRemoteManagerOptionsFlow(config_entries.OptionsFlow):
                 new_data[ATTR_TARGET_DEVICE_ID] = capability.target_device_id
                 new_data[ATTR_TARGET_KIND] = capability.target_kind
                 new_data[CONF_BINDING_NAME] = self._binding_name or self.config_entry.title
+                new_data.setdefault("source", "ha_config_flow")
+                new_data.setdefault("created_by", "home_assistant_ui")
                 self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
                 await self._persist_binding(new_data)
+                clear_trigger_discovery_cache(self.hass, str(new_data.get(ATTR_REMOTE_DEVICE_ID) or "").strip())
+                await async_refresh_binding_listener_safe(self.hass, str(new_data.get(ATTR_REMOTE_DEVICE_ID) or "").strip())
                 return self.async_create_entry(data={})
         return self.async_show_form(
             step_id="target_entity",
