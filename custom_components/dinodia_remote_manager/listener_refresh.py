@@ -1,5 +1,9 @@
 """Safe runtime trigger-listener refresh helpers."""
 
+# Architecture: lifecycle adapter used when bindings change. It keeps config
+# entry setup resilient while delegating actual event subscription to the trigger
+# listener module.
+
 from __future__ import annotations
 
 import logging

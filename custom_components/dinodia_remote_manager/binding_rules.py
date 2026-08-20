@@ -1,5 +1,9 @@
 """Binding and capability rules for Dinodia Remote Manager."""
 
+# Architecture: pure policy layer translating an HA target domain into the
+# actions that the remote router and platform UI may expose. It should remain
+# aligned with platform/iOS capability models without performing HA I/O.
+
 from __future__ import annotations
 
 from dataclasses import dataclass

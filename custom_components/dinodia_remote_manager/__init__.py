@@ -1,5 +1,9 @@
 """Dinodia Remote Manager integration."""
 
+# Architecture: Home Assistant integration entry point. It registers the domain's
+# services and runtime routers that the platform and iOS app call indirectly via
+# the shared dinodia_remote_manager service/event contract.
+
 from __future__ import annotations
 
 import logging

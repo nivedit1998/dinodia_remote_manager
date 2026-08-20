@@ -1,5 +1,9 @@
 """Persistent binding store for Dinodia Remote Manager."""
 
+# Architecture: versioned Home Assistant storage for remote-to-target bindings.
+# Config flow writes it; routers read it; migration code preserves compatibility
+# across HA add-on reloads without involving the platform database.
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass

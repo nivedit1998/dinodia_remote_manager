@@ -1,5 +1,9 @@
 """Config flow for Dinodia Remote Manager."""
 
+# Architecture: installation/options UI for creating remote bindings. It persists
+# selections through store.py; event_router.py and trigger_listener.py attach the
+# runtime behaviour after Home Assistant loads the config entry.
+
 from __future__ import annotations
 
 import uuid

@@ -1,5 +1,9 @@
 """Capability discovery helpers for Dinodia Remote Manager."""
 
+# Architecture: reads HA registries/device-automation metadata to build the
+# trigger-device inventory consumed by the integration's config flow, services
+# and platform/iOS dashboards. Cache boundaries here are local to Home Assistant.
+
 from __future__ import annotations
 
 from collections import OrderedDict

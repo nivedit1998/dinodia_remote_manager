@@ -1,5 +1,9 @@
 """Remote event normalization and binding lookup for Dinodia Remote Manager."""
 
+# Architecture: ingress normalization layer for HA events and service payloads.
+# It produces router_models.RemoteEvent values and resolves binding targets before
+# event_router.py performs the final Home Assistant action.
+
 from __future__ import annotations
 
 import logging

@@ -1,5 +1,9 @@
 """Listener wiring for remote trigger events."""
 
+# Architecture: subscribes to HA trigger/device events and forwards normalized
+# events into RemoteRouter. It owns deduplication and runtime listener lifecycle;
+# the target action still belongs to event_router.py.
+
 from __future__ import annotations
 
 import time

@@ -1,5 +1,9 @@
 """Shared router dataclasses for Dinodia Remote Manager."""
 
+# Architecture: typed internal contract between event normalization, binding
+# lookup, capability discovery and service execution. Platform/iOS response
+# models mirror selected fields but do not execute this local route directly.
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

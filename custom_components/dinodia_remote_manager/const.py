@@ -1,5 +1,9 @@
 """Constants for Dinodia Remote Manager."""
 
+# Architecture: names shared by every local integration module and mirrored by
+# platform/src/lib/remoteManager.ts and the iOS remote models. Renaming event or
+# service constants is a cross-repository contract change.
+
 DOMAIN = "dinodia_remote_manager"
 DATA_STORE_VERSION = 2
 DATA_STORE_KEY = f"{DOMAIN}.bindings"

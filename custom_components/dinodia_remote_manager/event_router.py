@@ -1,5 +1,9 @@
 """Target capability routing for Dinodia Remote Manager."""
 
+# Architecture: converts a normalized remote event into an HA service call for
+# the configured target. The router consumes binding state from store.py and
+# capability decisions from binding_rules.py; it is the local control boundary.
+
 from __future__ import annotations
 
 import logging
