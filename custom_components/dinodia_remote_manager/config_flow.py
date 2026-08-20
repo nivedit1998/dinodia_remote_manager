@@ -80,6 +80,9 @@ class DinodiaRemoteManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input: dict | None = None) -> FlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
+            entry_kind = str(user_input.get("entry_kind") or "").strip()
+            if entry_kind == BOOTSTRAP_ENTRY_KIND or bool(user_input.get("bootstrap")):
+                return await self._create_bootstrap_entry()
             remote_device_id = str(user_input.get(ATTR_REMOTE_DEVICE_ID) or "").strip()
             if not remote_device_id:
                 errors["base"] = "remote_required"
