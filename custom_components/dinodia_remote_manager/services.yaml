@@ -1,3 +1,4 @@
+# Architecture: Home Assistant custom-integration module custom_components/dinodia_remote_manager/services.yaml; participates in local event routing, trigger-device bindings, configuration or persisted state for Dinodia remote management.
 register_binding:
   name: Register binding
   description: Register a remote-to-target binding.
